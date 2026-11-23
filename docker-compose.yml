@@ -3,6 +3,7 @@
 #   Redpanda (Kafka)      localhost:19092    Schema Registry  http://localhost:18081
 #   Console Redpanda      http://localhost:18088
 #   Postgres (grand livre) localhost:15433   ingestion /metrics http://localhost:18090/metrics
+#   Neo4j                 http://localhost:17474 (bolt 17687)   graph-sink /metrics http://localhost:18091/metrics
 
 services:
   redpanda:
@@ -43,7 +44,10 @@ services:
           rpk topic create $$t -p 6 $$X || true
         done
         rpk registry compatibility-level set transactions.raw-value --level BACKWARD $$X
-        rpk registry schema create transactions.raw-value --schema /schemas/transaction.v1.json --type json $$X || true
+        # Chaque version est enregistrée dans l'ordre ; le registre refuse une version incompatible.
+        for v in /schemas/transaction.v*.json; do
+          rpk registry schema create transactions.raw-value --schema $$v --type json $$X
+        done
         rpk registry schema list $$X
     restart: "no"
 
@@ -78,7 +82,9 @@ services:
     restart: unless-stopped
 
   ingestion:
-    build: ./ingestion
+    build:
+      context: ./ingestion
+      args: { CMD: ingestion }
     environment:
       KAFKA_BROKERS: redpanda:9092
       SCHEMA_REGISTRY_URL: http://redpanda:8081
@@ -93,6 +99,44 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  neo4j:
+    image: neo4j:5.26.33-community
+    environment:
+      NEO4J_AUTH: neo4j/motdepasse-local  # développement local uniquement
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512M
+    ports:
+      - "127.0.0.1:17474:7474"
+      - "127.0.0.1:17687:7687"
+    volumes:
+      - neo4j:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 >/dev/null || exit 1"]
+      interval: 5s
+      retries: 30
+    restart: unless-stopped
+
+  # Alimente le graphe depuis transactions.valid (publié par l'outbox) : Postgres reste la source de vérité.
+  graph-sink:
+    build:
+      context: ./ingestion
+      args: { CMD: graphsink }
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      NEO4J_URI: neo4j://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: motdepasse-local
+      METRICS_ADDR: ":8091"
+    ports:
+      - "127.0.0.1:18091:8091"
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+      neo4j:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   redpanda:
   postgres:
+  neo4j:

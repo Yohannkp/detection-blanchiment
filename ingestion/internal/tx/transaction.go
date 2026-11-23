@@ -12,7 +12,8 @@ import (
 // Compte interne de la banque qui porte les espèces : contrepartie des dépôts et retraits.
 const CashAccount = "INTERNE:CAISSE"
 
-// Transaction suit le contrat schemas/transaction.v1.json (vocabulaire ISO 20022).
+// Transaction suit le contrat schemas/transaction.v2.json (vocabulaire ISO 20022). PaymentFormat
+// (v2) est facultatif : un message v1 reste valide.
 type Transaction struct {
 	TransactionID string    `json:"transaction_id"`
 	BookedAt      time.Time `json:"booked_at"`
@@ -21,6 +22,7 @@ type Transaction struct {
 	CreditorIBAN  string    `json:"creditor_iban,omitempty"`
 	AmountMinor   int64     `json:"amount_minor"`
 	Currency      string    `json:"currency"`
+	PaymentFormat string    `json:"payment_format,omitempty"`
 }
 
 // Raisons de rejet : elles partent en en-tête du message DLQ et dans les métriques.
@@ -45,11 +47,16 @@ func reject(reason, format string, a ...any) *Rejection {
 	return &Rejection{Reason: reason, Detail: fmt.Sprintf(format, a...)}
 }
 
-// Codes ISO 4217 acceptés (devises présentes dans les données AMLworld + principales devises).
+// Codes ISO 4217 acceptés (devises présentes dans les données AMLworld + principales devises),
+// plus XBT, code d'usage du bitcoin (unité mineure : le satoshi, 10⁻⁸ BTC).
 var currencies = map[string]bool{
 	"EUR": true, "USD": true, "GBP": true, "CHF": true, "JPY": true, "CNY": true, "INR": true,
 	"RUB": true, "AUD": true, "CAD": true, "MXN": true, "BRL": true, "SAR": true, "ILS": true,
-	"SEK": true, "NOK": true, "DKK": true, "PLN": true,
+	"SEK": true, "NOK": true, "DKK": true, "PLN": true, "XBT": true,
+}
+
+var paymentFormats = map[string]bool{
+	"": true, "ach": true, "cheque": true, "credit_card": true, "cash": true, "wire": true, "bitcoin": true,
 }
 
 // Parse décode un message JSON et le valide. Toute erreur renvoyée est une *Rejection.
@@ -78,6 +85,8 @@ func (t Transaction) Validate() error {
 		return reject(ReasonAmount, "montant %d ≤ 0", t.AmountMinor)
 	case !currencies[t.Currency]:
 		return reject(ReasonCurrency, "devise %q", t.Currency)
+	case !paymentFormats[t.PaymentFormat]:
+		return reject(ReasonSchema, "payment_format %q", t.PaymentFormat)
 	}
 
 	// Comptes attendus selon le type d'opération.

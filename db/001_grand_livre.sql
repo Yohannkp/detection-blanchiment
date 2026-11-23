@@ -20,6 +20,7 @@ CREATE TABLE transactions (
   creditor_account text        NOT NULL CHECK (creditor_account <> debtor_account),
   amount_minor     bigint      NOT NULL CHECK (amount_minor > 0),
   currency         char(3)     NOT NULL,
+  payment_format   text,                  -- v2 du contrat : moyen de paiement d'origine (facultatif)
   payload_sha256   bytea       NOT NULL,  -- empreinte du message : distingue un doublon d'un conflit
   source_partition int         NOT NULL,
   source_offset    bigint      NOT NULL,

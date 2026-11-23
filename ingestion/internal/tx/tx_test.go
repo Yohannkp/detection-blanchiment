@@ -48,6 +48,8 @@ func TestParse(t *testing.T) {
 		{"dépôt avec donneur d'ordre", `{"transaction_id":"t8","booked_at":"2026-11-23T10:00:00Z","payment_type":"cash_deposit","debtor_iban":"` + a + `","creditor_iban":"` + b + `","amount_minor":100,"currency":"EUR"}`, ReasonSchema},
 		{"sans identifiant", `{"booked_at":"2026-11-23T10:00:00Z","payment_type":"transfer","debtor_iban":"` + a + `","creditor_iban":"` + b + `","amount_minor":100,"currency":"EUR"}`, ReasonSchema},
 		{"JSON tronqué", `{"transaction_id":"t9"`, ReasonMalformed},
+		{"v2 : moyen de paiement", `{"transaction_id":"t11","booked_at":"2026-11-23T10:00:00Z","payment_type":"transfer","debtor_iban":"` + a + `","creditor_iban":"` + b + `","amount_minor":12300,"currency":"XBT","payment_format":"bitcoin"}`, ""},
+		{"v2 : moyen inconnu", `{"transaction_id":"t12","booked_at":"2026-11-23T10:00:00Z","payment_type":"transfer","debtor_iban":"` + a + `","creditor_iban":"` + b + `","amount_minor":100,"currency":"EUR","payment_format":"troc"}`, ReasonSchema},
 		{"données après l'objet", `{"transaction_id":"t10","booked_at":"2026-11-23T10:00:00Z","payment_type":"transfer","debtor_iban":"` + a + `","creditor_iban":"` + b + `","amount_minor":100,"currency":"EUR"}xyz`, ReasonMalformed},
 	}
 	for _, c := range cases {

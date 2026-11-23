@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Vérification de bout en bout du socle, stack lancée (docker compose up -d --build) :
 # 1 000 opérations valides + 100 doublons + 20 messages corrompus, puis contrôle de
-# Postgres, de la DLQ, de l'outbox et de la réconciliation. Code de sortie ≠ 0 si un contrôle échoue.
+# Postgres, de la DLQ, de l'outbox, de la réconciliation et du graphe Neo4j. Code de sortie ≠ 0 si un contrôle échoue.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -34,5 +34,8 @@ attendre "1 001 messages sur transactions.valid" '[ $(( $(fin_topic transactions
 ecart=$(psql "SELECT coalesce(sum(ecart_minor), 0) + coalesce(sum(ecritures_manquantes), 0) FROM v_reconciliation")
 [ "$ecart" -eq 0 ] || { echo "ÉCHEC : écart de réconciliation $ecart" >&2; exit 1; }
 
-echo "OK : 1 001 opérations écrites, 99 doublons absorbés, 20 messages en DLQ, outbox publiée, écart 0,00 €"
+# Le graphe Neo4j doit rattraper le grand livre (même nombre d'opérations, même somme, par devise).
+(cd ingestion && go run ./cmd/reconcilier -attendre 90s >/dev/null)   || { echo "ÉCHEC : Postgres et Neo4j ne concordent pas" >&2; (cd ingestion && go run ./cmd/reconcilier) >&2; exit 1; }
+
+echo "OK : 1 001 opérations écrites, 99 doublons absorbés, 20 messages en DLQ, outbox publiée, écart 0,00 €, graphe Neo4j concordant"
 curl -fs localhost:18090/metrics

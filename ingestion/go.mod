@@ -4,6 +4,7 @@ go 1.26.5
 
 require (
 	github.com/jackc/pgx/v5 v5.13.0
+	github.com/neo4j/neo4j-go-driver/v5 v5.28.6
 	github.com/twmb/franz-go v1.22.3
 )
 

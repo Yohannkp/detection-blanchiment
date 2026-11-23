@@ -33,17 +33,40 @@ jobs:
         env:
           TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/test
 
+  preparation:
+    name: Préparation des données AMLworld (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: pytest -q tests
+
   bout-en-bout:
     name: Bout en bout (Docker Compose)
     runs-on: ubuntu-latest
-    needs: tests
+    needs: [tests, preparation]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: ingestion/go.mod
           cache-dependency-path: ingestion/go.sum
-      - run: docker compose up -d --build redpanda postgres ingestion
+      - run: docker compose up -d --build redpanda postgres ingestion neo4j graph-sink
       - run: bash scripts/verifier_bout_en_bout.sh
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Rejeu AMLworld (extrait de test) puis réconciliation Postgres ↔ Neo4j
+        run: |
+          python outils/preparer_amlworld.py tests/fixtures/amlworld_extrait.csv --sortie /tmp/aml --voisins 100
+          (cd ingestion && go run ./cmd/rejouer -fichier /tmp/aml/rejeu.csv -debit 0)
+          (cd ingestion && go run ./cmd/reconcilier -attendre 90s)
+          bash scripts/charger_verite.sh /tmp/aml/verite.csv
       - if: failure()
         run: docker compose logs

@@ -52,11 +52,11 @@ func (s Store) Write(ctx context.Context, t tx.Transaction, src Source) (Result,
 	err = pgx.BeginFunc(ctx, s.Pool, func(q pgx.Tx) error {
 		tag, err := q.Exec(ctx, `
 			INSERT INTO transactions (transaction_id, booked_at, payment_type, debtor_account, creditor_account,
-			                          amount_minor, currency, payload_sha256, source_partition, source_offset)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			                          amount_minor, currency, payment_format, payload_sha256, source_partition, source_offset)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''), $9, $10, $11)
 			ON CONFLICT (transaction_id) DO NOTHING`,
 			t.TransactionID, t.BookedAt, t.PaymentType, debit, credit, t.AmountMinor, t.Currency,
-			sum[:], src.Partition, src.Offset)
+			t.PaymentFormat, sum[:], src.Partition, src.Offset)
 		if err != nil {
 			return err
 		}
