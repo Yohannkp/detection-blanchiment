@@ -1,0 +1,98 @@
+# Plateforme de détection du blanchiment — usage local uniquement (mots de passe de développement).
+# Démarrage : docker compose up -d --build
+#   Redpanda (Kafka)      localhost:19092    Schema Registry  http://localhost:18081
+#   Console Redpanda      http://localhost:18088
+#   Postgres (grand livre) localhost:15433   ingestion /metrics http://localhost:18090/metrics
+
+services:
+  redpanda:
+    image: redpandadata/redpanda:v25.2.4
+    command:
+      - redpanda start
+      - --mode dev-container
+      - --smp 1
+      - --memory 1G
+      - --kafka-addr internal://0.0.0.0:9092,externe://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,externe://localhost:19092
+      - --schema-registry-addr internal://0.0.0.0:8081,externe://0.0.0.0:18081
+    ports:
+      - "127.0.0.1:19092:19092"
+      - "127.0.0.1:18081:18081"
+    volumes:
+      - redpanda:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Topics + enregistrement du contrat de schéma (idempotent : rejouable sans erreur).
+  redpanda-init:
+    image: redpandadata/redpanda:v25.2.4
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    volumes:
+      - ./schemas:/schemas:ro
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        X="-X brokers=redpanda:9092 -X registry.hosts=redpanda:8081"
+        for t in transactions.raw transactions.dlq transactions.valid; do
+          rpk topic create $$t -p 6 $$X || true
+        done
+        rpk registry compatibility-level set transactions.raw-value --level BACKWARD $$X
+        rpk registry schema create transactions.raw-value --schema /schemas/transaction.v1.json --type json $$X || true
+        rpk registry schema list $$X
+    restart: "no"
+
+  console:
+    image: redpandadata/console:v3.2.2
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      SCHEMAREGISTRY_ENABLED: "true"
+      SCHEMAREGISTRY_URLS: http://redpanda:8081
+    ports:
+      - "127.0.0.1:18088:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: grand_livre
+    ports:
+      - "127.0.0.1:15433:5432"
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "grand_livre"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  ingestion:
+    build: ./ingestion
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      SCHEMA_REGISTRY_URL: http://redpanda:8081
+      DATABASE_URL: postgres://ingestion:ingestion@postgres:5432/grand_livre
+      METRICS_ADDR: ":8090"
+    ports:
+      - "127.0.0.1:18090:8090"
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  redpanda:
+  postgres:

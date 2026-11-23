@@ -1,0 +1,6 @@
+.context/
+*.exe
+/data/
+.env
+FICHE-PROJET.md
+CLAUDE.md
