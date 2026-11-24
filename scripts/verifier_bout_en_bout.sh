@@ -45,5 +45,10 @@ for cas in fanin:fan_in cycle:cycle especes:especes_fractionnees; do
 done
 attendre "annonces d'alertes publiées" '[ "$(psql "SELECT count(*) FROM outbox WHERE topic = '"'alerts.aml'"' AND published_at IS NULL")" -eq 0 ]'
 
-echo "OK : 1 001 opérations écrites, 99 doublons absorbés, 20 messages en DLQ, outbox publiée, écart 0,00 €, graphe Neo4j concordant, alertes fan-in, cycle et espèces fractionnées levées"
+# API de l'analyste : santé (écart nul) et alertes des scénarios visibles dans la file.
+attendre "API de l'analyste" 'curl -fs localhost:18100/sante >/dev/null'
+curl -fs localhost:18100/sante | grep -q '"devises_en_ecart":0,"ecritures_manquantes":0' || { echo "ÉCHEC : l'API ne voit pas un grand livre équilibré" >&2; exit 1; }
+curl -fs "localhost:18100/alertes?regle=cycle&statut=toutes&limite=500" | grep -q '"regle":"cycle"'   || { echo "ÉCHEC : l'alerte de cycle n'apparaît pas dans la file de l'API" >&2; exit 1; }
+
+echo "OK : 1 001 opérations écrites, 99 doublons absorbés, 20 messages en DLQ, outbox publiée, écart 0,00 €, graphe Neo4j concordant, alertes fan-in, cycle et espèces fractionnées levées et visibles dans l'API"
 curl -fs localhost:18090/metrics

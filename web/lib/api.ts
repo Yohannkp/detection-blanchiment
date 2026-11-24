@@ -1,0 +1,80 @@
+// Accès à l'API de l'analyste (api/app.py).
+export const API = process.env.NEXT_PUBLIC_API ?? "http://localhost:18100";
+
+export type Regle = "fan_in" | "fan_out" | "cycle" | "especes_fractionnees";
+export type Statut = "a_traiter" | "sans_suite" | "escalade" | "soupcon";
+export type Decision = Exclude<Statut, "a_traiter">;
+
+export interface Sante {
+  devises_en_ecart: number;
+  ecritures_manquantes: number;
+  operations: number;
+  debit: number;
+  alertes: number;
+  a_traiter: number;
+  outbox_en_attente: number;
+  latence_p50_ms: number | null;
+  dlq: number | null;
+}
+
+export interface AlerteResume {
+  alert_id: string;
+  regle: Regle;
+  entite: string;
+  ouverte_le: string;
+  creee_le: string;
+  score: number | null;
+  n: number;
+  devises: number;
+  montant: number | null;  // null si plusieurs devises
+  devise: string | null;
+  debut: string;
+  fin: string;
+  statut: Statut;
+}
+
+export interface Operation {
+  transaction_id: string;
+  booked_at: string;
+  src: string;
+  dst: string;
+  amount_minor: number;
+  currency: string;
+  payment_format?: string | null;
+}
+
+export interface Raison { variable: string; valeur: string | number | boolean | null; contribution: number }
+
+export interface Dossier {
+  alerte: { alert_id: string; regle: Regle; entite: string; ouverte_le: string; declencheur: string; creee_le: string };
+  score: { score: number; tx_suspecte: string; raisons: Raison[]; modele: string; calcule_le: string } | null;
+  preuves: Operation[];
+  voisinage: Operation[];
+  decisions: { decision: Decision; justification: string; analyste: string; decidee_le: string }[];
+  audit: { quand: string; quoi: "ouverture" | "preuve" | "score" | "decision"; detail: string }[];
+}
+
+async function lire<T>(chemin: string): Promise<T> {
+  const r = await fetch(API + chemin, { cache: "no-store" });
+  if (!r.ok) throw new Error(`${chemin} : HTTP ${r.status}`);
+  return r.json();
+}
+
+export const lireSante = () => lire<Sante>("/sante");
+export const lireAlertes = (regle: Regle | null, statut: "a_traiter" | "traitees" | "toutes") =>
+  lire<AlerteResume[]>(`/alertes?statut=${statut}${regle ? `&regle=${regle}` : ""}&limite=200`);
+export const lireDossier = (id: string) => lire<Dossier>(`/alertes/${encodeURIComponent(id)}`);
+
+export async function decider(id: string, decision: Decision, justification: string, analyste: string) {
+  const r = await fetch(`${API}/alertes/${encodeURIComponent(id)}/decisions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ decision, justification, analyste }),
+  });
+  if (!r.ok) {
+    const corps = await r.json().catch(() => null);
+    throw new Error(corps?.detail?.[0]?.msg ?? corps?.detail ?? `HTTP ${r.status}`);
+  }
+}
+
+export const urlFlux = () => API.replace(/^http/, "ws") + "/flux";

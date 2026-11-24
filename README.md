@@ -1,15 +1,18 @@
-# Détection du blanchiment en temps réel
+# Filature — détection du blanchiment en temps réel
 
 Plateforme de streaming qui reçoit des opérations bancaires, les inscrit dans un grand livre en partie
 double sans jamais compter deux fois le même euro, et détecte en flux les schémas de blanchiment dans le
 graphe des flux, avec des performances mesurées sur des données étiquetées que la détection n'a jamais vues.
 
-> **État : lots 1 à 4 terminés (socle, données et graphe, détection, modèle).** 176 060 opérations du jeu public
+![Filature : le dossier d'un montage circulaire, avec son graphe numéroté, sa frise du temps, les raisons du score et la décision de l'analyste](docs/captures/filature-dossier-cycle.png)
+
+> **État : lots 1 à 5 terminés (socle, données et graphe, détection, modèle, interface).** 176 060 opérations du jeu public
 > IBM AMLworld traversent la plateforme ; grand livre et graphe concordent au centime ; sur la période de test,
 > les règles retrouvent **40 % des opérations illicites avec 41 % de précision** (plus de 80 % des motifs en
 > étoile), alertes levées en **~170 ms**. Un modèle LightGBM évalué dans le protocole de l'article AMLworld
 > (F1 **0,525** ; références publiées 0,48 à 0,63) et un modèle de service appris sur le grand livre lui-même
-> (F1 **0,73** contre 0,35 pour les règles, même fenêtre) note chaque alerte avec ses 3 raisons. L'interface viendra ensuite.
+> (F1 **0,73** contre 0,35 pour les règles, même fenêtre) note chaque alerte avec ses 3 raisons. L'analyste instruit
+> et décide dans **Filature**, et chaque décision entre dans une piste d'audit qu'on ne peut ni modifier ni effacer.
 
 ## Ce que fait le socle
 
@@ -126,6 +129,16 @@ docker compose --profile modele up -d scoreur                                   
 mlflow ui --backend-store-uri sqlite:///mlflow.db                                          # suivi des essais
 ```
 
+## Interface : Filature
+
+Le poste de l'analyste conformité : file d'alertes triée par score, dossier (graphe des comptes aux
+flèches numérotées, frise du temps qui montre les phases du montage, liste des flux), raisons du score en
+mots, décision (classer sans suite, escalader, préparer une déclaration de soupçon) avec justification
+obligatoire, piste d'audit, bandeau de santé et mises à jour en direct (WebSocket). API FastAPI, interface
+Next.js ; détails et choix : [docs/decisions/005-interface.md](docs/decisions/005-interface.md).
+
+![Un dossier de fan-out : 16 opérations vers 16 comptes en 4 jours, en 7 devises](docs/captures/filature-dossier-fan-out.png)
+
 ## Mesures et tests de panne (2026-11-23, PC portable, Docker Desktop)
 
 | Scénario | Résultat observé |
@@ -143,7 +156,7 @@ mlflow ui --backend-store-uri sqlite:///mlflow.db                               
 2. **Données** — rejeu du jeu public IBM AMLworld, graphe Neo4j, réconciliation Postgres ↔ Neo4j *(fait)*
 3. **Détection** — règles à fenêtres glissantes, cycles dans le graphe, alertes, évaluation *(fait)*
 4. **ML** — score LightGBM expliqué par SHAP, suivi MLflow, évaluation contre la référence publiée *(fait)*
-5. **Interface** — poste de l'analyste conformité (file d'alertes, dossier, piste d'audit)
+5. **Interface** — poste de l'analyste conformité (file d'alertes, dossier, décision, piste d'audit) *(fait)*
 6. **Chaos et mesures** — scénarios de démonstration, test de charge
 
 ## Lancer
@@ -151,12 +164,15 @@ mlflow ui --backend-store-uri sqlite:///mlflow.db                               
 Prérequis : Docker, Go 1.26 (et Python 3.13 pour préparer les données).
 
 ```bash
-docker compose up -d --build           # Redpanda, Schema Registry, console, Postgres, ingestion, Neo4j, graph-sink, Redis, détecteur
+docker compose up -d --build           # toute la plateforme, API et interface comprises → http://localhost:3100
+docker compose --profile modele up -d scoreur   # scores des alertes (une fois le modèle entraîné, voir « Modèle »)
 bash scripts/verifier_bout_en_bout.sh  # 1 000 + 100 doublons + 20 corrompus, puis contrôles
 ```
 
 | Service | Adresse |
 |---|---|
+| **Filature, le poste de l'analyste** | **http://localhost:3100** |
+| API de l'analyste (documentation : `/docs`) | http://localhost:18100 |
 | Console Redpanda (topics, DLQ, schémas) | http://localhost:18088 |
 | Métriques de l'ingestion | http://localhost:18090/metrics |
 | Postgres (grand livre) | `localhost:15433`, base `grand_livre` |
@@ -213,10 +229,13 @@ db/001_grand_livre.sql        grand livre, contraintes, outbox, vues de réconci
 db/002_evaluation.sql         vérité terrain (étiquette, motif), hors de portée des rôles applicatifs
 db/003_alertes.sql            alertes et preuves (ajout seul), rôle detection restreint
 db/004_scores.sql             scores et raisons du modèle (ajout seul), rôle scoreur
+db/005_decisions.sql          décisions de l'analyste (ajout seul), rôle api
+api/                          API FastAPI du poste de l'analyste (+ WebSocket)
+web/                          interface Filature (Next.js, d3)
 ml/                           variables sans fuite (DuckDB), entraînement LightGBM + MLflow, scoreur en direct
 ingestion/cmd/                ingestion, graphsink, detecteur, reconcilier, rejouer, injecter (Go : franz-go, pgx, neo4j-go-driver, go-redis)
 outils/                       préparation du jeu AMLworld (Python, DuckDB)
-tests/                        tests de la préparation, des variables (anti-fuite) et du scoreur
+tests/                        tests de la préparation, des variables (anti-fuite), du scoreur et de l'API
 scripts/                      vérification de bout en bout, chargement de la vérité terrain, évaluation de la détection
 docs/decisions/               choix d'architecture argumentés
 ```

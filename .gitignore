@@ -10,3 +10,4 @@ mlflow.db
 __pycache__/
 .pytest_cache/
 modeles/
+.claude/

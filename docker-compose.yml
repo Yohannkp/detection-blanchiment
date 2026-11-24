@@ -5,6 +5,7 @@
 #   Postgres (grand livre) localhost:15433   ingestion /metrics http://localhost:18090/metrics
 #   Neo4j                 http://localhost:17474 (bolt 17687)   graph-sink /metrics http://localhost:18091/metrics
 #   Redis (fenêtres)      localhost:16379                       détecteur /metrics http://localhost:18092/metrics
+#   API de l'analyste     http://localhost:18100 (docs : /docs)    interface : http://localhost:3100 (web/)
 
 services:
   redpanda:
@@ -175,6 +176,31 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    restart: unless-stopped
+
+  # API du poste de l'analyste (Filature) : file d'alertes, dossiers, santé, décisions, WebSocket.
+  api:
+    build: ./api
+    environment:
+      DATABASE_URL: postgresql://api:api@postgres:5432/grand_livre
+      METRIQUES_INGESTION: http://ingestion:8090/metrics
+      ORIGINES: http://localhost:3100
+    ports:
+      - "127.0.0.1:18100:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Interface Filature (Next.js). L'adresse de l'API est celle que voit le NAVIGATEUR de l'analyste.
+  web:
+    build:
+      context: ./web
+      args: { NEXT_PUBLIC_API: "http://localhost:18100" }
+    ports:
+      - "127.0.0.1:3100:3000"
+    depends_on:
+      - api
     restart: unless-stopped
 
   # Score (0-1) et raisons SHAP de chaque alerte, avec le modèle exporté par ml/entrainer.py.

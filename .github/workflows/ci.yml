@@ -40,28 +40,56 @@ jobs:
           TEST_REDIS_URL: redis://localhost:6379/15
 
   preparation:
-    name: Données AMLworld, variables anti-fuite et scoreur (Python)
+    name: Données AMLworld, variables anti-fuite, scoreur et API (Python)
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 10
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
           cache: pip
-      - run: pip install -r requirements.txt
+      - run: pip install -r requirements.txt -r api/requirements.txt
       - run: pytest -q tests
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/test
+
+  interface:
+    name: Interface Filature (types et build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm run build
 
   bout-en-bout:
     name: Bout en bout (Docker Compose)
     runs-on: ubuntu-latest
-    needs: [tests, preparation]
+    needs: [tests, preparation, interface]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: ingestion/go.mod
           cache-dependency-path: ingestion/go.sum
-      - run: docker compose up -d --build redpanda postgres ingestion neo4j graph-sink redis detecteur
+      - run: docker compose up -d --build redpanda postgres ingestion neo4j graph-sink redis detecteur api
       - run: bash scripts/verifier_bout_en_bout.sh
       - uses: actions/setup-python@v7
         with:
