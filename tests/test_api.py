@@ -70,6 +70,8 @@ def test_file_et_dossier(client):
     file = client.get("/alertes").json()
     a = next(x for x in file if x["alert_id"] == ALERTE)
     assert (a["n"], a["devises"], a["montant"], a["statut"]) == (3, 1, 294000, "a_traiter") and a["score"] == pytest.approx(0.91)
+    assert client.get("/alertes?tri=recentes").json()[0]["alert_id"] == ALERTE  # la plus récente en tête
+    assert client.get("/alertes?tri=inconnu").status_code == 422
     d = client.get(f"/alertes/{ALERTE}").json()
     assert [p["transaction_id"] for p in d["preuves"]] == ["t1", "t2", "t3"]
     assert [e["quoi"] for e in d["audit"]][0] == "ouverture"

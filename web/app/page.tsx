@@ -5,7 +5,7 @@ import Cote from "@/components/Cote";
 import Dossier from "@/components/Dossier";
 import FileAlertes, { type FiltreStatut } from "@/components/FileAlertes";
 import Sante from "@/components/Sante";
-import { lireAlertes, lireDossier, lireSante, urlFlux, type AlerteResume, type Dossier as D, type Regle, type Sante as S } from "@/lib/api";
+import { lireAlertes, lireDossier, lireSante, urlFlux, type AlerteResume, type Dossier as D, type Regle, type Sante as S, type Tri } from "@/lib/api";
 
 export default function Poste() {
   const [sante, setSante] = useState<S | null>(null);
@@ -13,6 +13,7 @@ export default function Poste() {
   const [alertes, setAlertes] = useState<AlerteResume[] | null>(null);
   const [regle, setRegle] = useState<Regle | null>(null);
   const [statut, setStatut] = useState<FiltreStatut>("a_traiter");
+  const [tri, setTri] = useState<Tri>("score");
   const [choisie, setChoisie] = useState<string | null>(null);
   const [dossier, setDossier] = useState<D | null>(null);
   const [erreur, setErreur] = useState<string | null>(null);
@@ -32,7 +33,7 @@ export default function Poste() {
 
   const rafraichir = useCallback(async () => {
     try {
-      const liste = await lireAlertes(regle, statut);
+      const liste = await lireAlertes(regle, statut, tri);
       setAlertes(liste);
       setErreur(null);
       if (!choisieRef.current && liste[0]) setChoisie(liste[0].alert_id);
@@ -40,7 +41,7 @@ export default function Poste() {
     } catch (e) {
       setErreur(`API injoignable (${(e as Error).message}). La plateforme est-elle lancée ?`);
     }
-  }, [regle, statut, afficherDossier]);
+  }, [regle, statut, tri, afficherDossier]);
   const rafraichirRef = useRef(rafraichir);
   rafraichirRef.current = rafraichir;
 
@@ -96,7 +97,7 @@ export default function Poste() {
       </header>
       <main className="poste">
         <section className="file">
-          <FileAlertes alertes={alertes} choisie={choisie} choisir={setChoisie} regle={regle} setRegle={setRegle} statut={statut} setStatut={setStatut} />
+          <FileAlertes alertes={alertes} choisie={choisie} choisir={setChoisie} regle={regle} setRegle={setRegle} statut={statut} setStatut={setStatut} tri={tri} setTri={setTri} />
         </section>
         <section className="dossier">
           {erreur && <p className="erreur" role="alert">{erreur}</p>}

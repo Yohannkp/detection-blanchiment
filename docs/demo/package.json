@@ -1,0 +1,6 @@
+{
+  "name": "filature-demo",
+  "private": true,
+  "description": "Enregistre la vidéo de démonstration de Filature (navigateur piloté, puis ffmpeg).",
+  "dependencies": { "puppeteer-core": "24.30.0" }
+}

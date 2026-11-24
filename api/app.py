@@ -106,6 +106,7 @@ async def _dlq() -> int | None:
 async def alertes(
     regle: Literal["fan_in", "fan_out", "cycle", "especes_fractionnees"] | None = None,
     statut: Literal["a_traiter", "traitees", "toutes"] = "a_traiter",
+    tri: Literal["score", "recentes"] = "score",
     limite: int = Query(60, ge=1, le=500),
 ) -> list[dict]:
     return await requete(f"""
@@ -122,8 +123,8 @@ async def alertes(
         FROM alertes a JOIN p USING (alert_id) LEFT JOIN s USING (alert_id) LEFT JOIN st USING (alert_id)
         WHERE (%s::text IS NULL OR a.regle = %s)
           AND (%s = 'toutes' OR (%s = 'a_traiter') = (st.decision IS NULL))
-        ORDER BY s.score DESC NULLS LAST, a.creee_le DESC
-        LIMIT %s""", MODELE_SERVICE, regle, regle, statut, statut, limite)
+        ORDER BY CASE WHEN %s = 'score' THEN s.score END DESC NULLS LAST, a.creee_le DESC
+        LIMIT %s""", MODELE_SERVICE, regle, regle, statut, statut, tri, limite)
 
 
 @app.get("/alertes/{alert_id}")

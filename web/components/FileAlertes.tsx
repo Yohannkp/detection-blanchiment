@@ -1,22 +1,26 @@
 "use client";
-import type { AlerteResume, Regle } from "@/lib/api";
+import type { AlerteResume, Regle, Tri } from "@/lib/api";
 import { REGLES, ibanCourt, jourMois, montantCourt, score } from "@/lib/format";
 
 export type FiltreStatut = "a_traiter" | "traitees";
 export const LIMITE = 200;  // l'API renvoie au plus 200 alertes, les mieux notées : on le dit
 
-export default function FileAlertes({ alertes, choisie, choisir, regle, setRegle, statut, setStatut }: {
+export default function FileAlertes({ alertes, choisie, choisir, regle, setRegle, statut, setStatut, tri, setTri }: {
   alertes: AlerteResume[] | null; choisie: string | null; choisir: (id: string) => void;
   regle: Regle | null; setRegle: (r: Regle | null) => void; statut: FiltreStatut; setStatut: (s: FiltreStatut) => void;
+  tri: Tri; setTri: (t: Tri) => void;
 }) {
   const regles: (Regle | null)[] = [null, "fan_in", "fan_out", "cycle", "especes_fractionnees"];
   return (
     <>
       <div className="titre"><span>File d'alertes</span>
-        <span>{alertes ? (alertes.length >= LIMITE ? `${LIMITE} premières · par score` : `${alertes.length} · par score`) : ""}</span></div>
+        <span>{alertes ? `${alertes.length >= LIMITE ? `${LIMITE} premières` : alertes.length} · ${tri === "score" ? "par score" : "plus récentes d'abord"}` : ""}</span></div>
       <div className="filtres" role="group" aria-label="Statut">
         <button className="puce" aria-pressed={statut === "a_traiter"} onClick={() => setStatut("a_traiter")}>À traiter</button>
         <button className="puce" aria-pressed={statut === "traitees"} onClick={() => setStatut("traitees")}>Traitées</button>
+        <span style={{ flex: 1 }} />
+        <button className="puce" aria-pressed={tri === "score"} onClick={() => setTri("score")}>Score</button>
+        <button className="puce" aria-pressed={tri === "recentes"} onClick={() => setTri("recentes")}>Récentes</button>
       </div>
       <div className="filtres" role="group" aria-label="Règle" style={{ marginBottom: 14 }}>
         {regles.map((r) => (

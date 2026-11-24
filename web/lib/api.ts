@@ -61,8 +61,9 @@ async function lire<T>(chemin: string): Promise<T> {
 }
 
 export const lireSante = () => lire<Sante>("/sante");
-export const lireAlertes = (regle: Regle | null, statut: "a_traiter" | "traitees" | "toutes") =>
-  lire<AlerteResume[]>(`/alertes?statut=${statut}${regle ? `&regle=${regle}` : ""}&limite=200`);
+export type Tri = "score" | "recentes";
+export const lireAlertes = (regle: Regle | null, statut: "a_traiter" | "traitees" | "toutes", tri: Tri) =>
+  lire<AlerteResume[]>(`/alertes?statut=${statut}&tri=${tri}${regle ? `&regle=${regle}` : ""}&limite=200`);
 export const lireDossier = (id: string) => lire<Dossier>(`/alertes/${encodeURIComponent(id)}`);
 
 export async function decider(id: string, decision: Decision, justification: string, analyste: string) {
