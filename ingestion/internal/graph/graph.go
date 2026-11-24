@@ -12,6 +12,9 @@ import (
 	"github.com/Yohannkp/detection-blanchiment/ingestion/internal/tx"
 )
 
+// Topic reçoit chaque opération une fois écrite dans le graphe (lu par le détecteur).
+const Topic = "transactions.graphe"
+
 // Schema crée les contraintes d'unicité (idempotent).
 var Schema = []string{
 	`CREATE CONSTRAINT compte_unique IF NOT EXISTS FOR (a:Account) REQUIRE a.id IS UNIQUE`,

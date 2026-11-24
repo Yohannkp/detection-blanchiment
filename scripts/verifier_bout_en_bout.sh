@@ -37,5 +37,13 @@ ecart=$(psql "SELECT coalesce(sum(ecart_minor), 0) + coalesce(sum(ecritures_manq
 # Le graphe Neo4j doit rattraper le grand livre (même nombre d'opérations, même somme, par devise).
 (cd ingestion && go run ./cmd/reconcilier -attendre 90s >/dev/null)   || { echo "ÉCHEC : Postgres et Neo4j ne concordent pas" >&2; (cd ingestion && go run ./cmd/reconcilier) >&2; exit 1; }
 
-echo "OK : 1 001 opérations écrites, 99 doublons absorbés, 20 messages en DLQ, outbox publiée, écart 0,00 €, graphe Neo4j concordant"
+# Détection : chaque scénario doit ouvrir son alerte sur le compte attendu.
+for cas in fanin:fan_in cycle:cycle especes:especes_fractionnees; do
+  mode=${cas%%:*}; regle=${cas#*:}
+  entite=$(cd ingestion && go run ./cmd/injecter -mode "$mode" | awk '/^entite:/ {print $2}')
+  attendre "alerte $regle sur $entite" "[ \"\$(psql \"SELECT count(*) FROM alertes WHERE regle = '$regle' AND entite = '$entite'\")\" -ge 1 ]"
+done
+attendre "annonces d'alertes publiées" '[ "$(psql "SELECT count(*) FROM outbox WHERE topic = '"'alerts.aml'"' AND published_at IS NULL")" -eq 0 ]'
+
+echo "OK : 1 001 opérations écrites, 99 doublons absorbés, 20 messages en DLQ, outbox publiée, écart 0,00 €, graphe Neo4j concordant, alertes fan-in, cycle et espèces fractionnées levées"
 curl -fs localhost:18090/metrics

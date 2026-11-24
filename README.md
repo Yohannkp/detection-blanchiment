@@ -1,12 +1,13 @@
 # Détection du blanchiment en temps réel
 
 Plateforme de streaming qui reçoit des opérations bancaires, les inscrit dans un grand livre en partie
-double sans jamais compter deux fois le même euro, et (lots suivants) détecte les schémas de blanchiment
-dans le graphe des flux.
+double sans jamais compter deux fois le même euro, et détecte en flux les schémas de blanchiment dans le
+graphe des flux, avec des performances mesurées sur des données étiquetées que la détection n'a jamais vues.
 
-> **État : lots 1 (socle) et 2 (données, graphe) terminés.** 176 060 opérations du jeu public IBM AMLworld
-> passent par la plateforme jusqu'au graphe Neo4j, avec un grand livre et un graphe qui concordent au centime.
-> La détection, le ML et l'interface viendront dans les lots suivants.
+> **État : lots 1 (socle), 2 (données, graphe) et 3 (détection) terminés.** 176 060 opérations du jeu public
+> IBM AMLworld traversent la plateforme ; grand livre et graphe concordent au centime ; sur la période de test,
+> les règles retrouvent **40 % des opérations illicites avec 41 % de précision** (plus de 80 % des motifs en
+> étoile), alertes levées en **~170 ms**. Le ML et l'interface viendront dans les lots suivants.
 
 ## Ce que fait le socle
 
@@ -18,7 +19,9 @@ dans le graphe des flux.
                                                                     │
                                                       relais outbox ─► transactions.valid
                                                                                     │
-                                              graph-sink (Go, MERGE idempotent) ─► Neo4j ─► (détection, lot 3)
+                                              graph-sink (Go, MERGE idempotent) ─► Neo4j ─► transactions.graphe
+                                                                                                    │
+                                     alerts.aml ◄─ outbox ◄─ Postgres (alertes, preuves) ◄─ détecteur (Go) ◄─► Redis (fenêtres)
 ```
 
 | Garantie | Comment | Vérifié par |
@@ -31,6 +34,8 @@ dans le graphe des flux.
 | Une panne ne perd rien | Panne (base, registre, Kafka) → nouvel essai sur le même message, délai de 5 s par essai, offset jamais sauté | `TestPanneRenvoieErreur`, tests de panne ci-dessous |
 | Aval cohérent avec le grand livre | Outbox publiée au moins une fois ; publication marquée seulement si Kafka a accusé réception | `TestOutboxPublieeUneFois` |
 | Le graphe ne diverge pas du grand livre | Graph-sink idempotent (contraintes d'unicité Neo4j sur le compte et sur `transaction_id`) ; `reconcilier` compare, devise par devise, nombre d'opérations et sommes | Bout en bout (CI), rejeu complet, test de panne ci-dessous |
+| La détection ne dépend pas de l'ordre d'arrivée | Toutes les fenêtres contenant l'opération sont réévaluées ; alertes par période fixe ; un cycle est cherché depuis n'importe laquelle de ses opérations | `TestIndependantDeLOrdreDArrivee` (20 ordres, dont l'inverse), `TestRetraitementIdempotent` |
+| La détection ne peut ni tricher ni déborder | Vérité terrain dans un schéma illisible par le rôle `detection` ; ce rôle ne peut écrire dans l'outbox que sur `alerts.aml` | Contrôlé sur la base (refus Postgres) |
 | Le contrat évolue sans casser les producteurs | Schema Registry en compatibilité BACKWARD : v2 ajoute `payment_format` (facultatif) ; une version incompatible est refusée au démarrage | Démarrage du Compose (v1 puis v2 enregistrées) |
 
 La DLQ est, comme l'outbox, **au moins une fois** : après une panne au mauvais moment, un même message
@@ -57,11 +62,31 @@ valides, montants exacts en unités mineures, identifiants déterministes, **ét
 
 ```bash
 pip install -r requirements.txt
-python outils/preparer_amlworld.py data/HI-Small_Trans.csv --sortie data --voisins 25
+python outils/preparer_amlworld.py data/HI-Small_Trans.csv --sortie data --voisins 25 --motifs data/HI-Small_Patterns.txt
 cd ingestion && go run ./cmd/rejouer -debit 200          # horodatages d'origine conservés
 cd .. && bash scripts/charger_verite.sh                   # étiquettes → evaluation.verite_terrain
 cd ingestion && go run ./cmd/reconcilier -attendre 60s    # grand livre ↔ graphe
 ```
+
+## Détection
+
+Quatre règles, calibrées sur les jours 1 à 5 du jeu puis figées : **fan-in** et **fan-out** (au moins 5 ou
+6 contreparties distinctes en 96 h, sur un compte à faible historique), **cycle** (l'argent revient à son
+compte d'origine en 2 à 6 opérations sur 7 jours, recherche Cypher dans Neo4j), **espèces fractionnées**
+(dépôts juste sous le seuil COSI de Tracfin, 10 000 € par mois). Choix et chiffres détaillés :
+[docs/decisions/003-detection.md](docs/decisions/003-detection.md).
+
+| Période (évaluation `scripts/evaluer_detection.sql`) | Précision | Rappel | F1 |
+|---|---|---|---|
+| Calibrage, 1-5 sept. | 0,267 | 0,318 | 0,291 |
+| **Test, 6-10 sept.** | **0,410** | **0,404** | **0,407** |
+
+Rappel sur la période de test : fan-in 0,93, scatter-gather 0,91, fan-out 0,87, gather-scatter 0,81,
+cycle 0,32, mais stack 0,06 et bipartite 0,09 : ces motifs sans centre net, et les opérations illicites
+isolées, sont l'affaire du modèle du lot 4. Les jours 11 à 18 sont exclus de l'évaluation : 91 % des
+opérations y sont illicites (le générateur termine ses tentatives), la précision y serait artificielle.
+Ces chiffres ne se comparent pas directement à ceux de l'article AMLworld (taux d'illicites et découpage
+différents).
 
 ## Mesures et tests de panne (2026-11-23, PC portable, Docker Desktop)
 
@@ -71,13 +96,14 @@ cd ingestion && go run ./cmd/reconcilier -attendre 60s    # grand livre ↔ grap
 | Ingestion tuée (`docker kill`) en plein lot de 5 000 | 5 000/5 000 écrites ; 610 messages relus après la reprise, tous absorbés ; reprise en 10 s ; écart 0 |
 | Postgres arrêté pendant l'envoi de 300 opérations | Message bloqué et réessayé toutes les 5 s (visible dans les journaux et `ingestion_reessais_total`) ; 300/300 écrites 2 s après le retour de la base ; écart 0 |
 | Graph-sink tué en plein envoi de 8 000 opérations | Réconciliation en écart (3 694 opérations manquantes dans le graphe) pendant la panne ; rattrapage en 9 s après la relance ; écart 0 |
-| Rejeu complet AMLworld (176 060 opérations, envoi au plus vite) | Toutes écrites, 0 en DLQ ; grand livre équilibré ; graphe concordant ; **≈ 320 opérations/s** de bout en bout (9 min 8 s). Limite connue : un COMMIT Postgres par message ; regroupement prévu au lot 6 |
+| Rejeu complet AMLworld (176 060 opérations, envoi au plus vite) | Toutes écrites, 0 en DLQ ; grand livre équilibré ; graphe concordant ; ingestion seule : 4 à 9 min selon les essais (≈ 320 à 660 op/s) ; avec la détection : 20 min 41 s (≈ 140 op/s). Limites connues : un COMMIT Postgres par message, recherche de cycles sur ± 7 jours ; optimisation prévue au lot 6 |
+| Latence de détection, 18 scénarios injectés à vide | Médiane 168 ms, maximum 1,06 s entre l'ingestion de l'opération et la création de l'alerte |
 
 ## Feuille de route
 
 1. **Socle** — ingestion, grand livre, DLQ, outbox, tests de panne *(fait)*
 2. **Données** — rejeu du jeu public IBM AMLworld, graphe Neo4j, réconciliation Postgres ↔ Neo4j *(fait)*
-3. **Détection** — règles à fenêtres glissantes, cycles ordonnés dans le temps, alertes
+3. **Détection** — règles à fenêtres glissantes, cycles dans le graphe, alertes, évaluation *(fait)*
 4. **ML** — score LightGBM expliqué par SHAP, suivi MLflow, évaluation contre la référence publiée
 5. **Interface** — poste de l'analyste conformité (file d'alertes, dossier, piste d'audit)
 6. **Chaos et mesures** — scénarios de démonstration, test de charge
@@ -87,7 +113,7 @@ cd ingestion && go run ./cmd/reconcilier -attendre 60s    # grand livre ↔ grap
 Prérequis : Docker, Go 1.26 (et Python 3.13 pour préparer les données).
 
 ```bash
-docker compose up -d --build           # Redpanda, Schema Registry, console, Postgres, ingestion, Neo4j, graph-sink
+docker compose up -d --build           # Redpanda, Schema Registry, console, Postgres, ingestion, Neo4j, graph-sink, Redis, détecteur
 bash scripts/verifier_bout_en_bout.sh  # 1 000 + 100 doublons + 20 corrompus, puis contrôles
 ```
 
@@ -99,6 +125,7 @@ bash scripts/verifier_bout_en_bout.sh  # 1 000 + 100 doublons + 20 corrompus, pu
 | Kafka / Schema Registry | `localhost:19092` / http://localhost:18081 |
 | Neo4j (navigateur ; utilisateur `neo4j`, mot de passe de développement `motdepasse-local`) | http://localhost:17474 |
 | Métriques du graph-sink | http://localhost:18091/metrics |
+| Métriques du détecteur / Redis | http://localhost:18092/metrics / `localhost:16379` |
 
 Envoyer des messages à la main :
 
@@ -107,6 +134,15 @@ cd ingestion
 go run ./cmd/injecter -mode normal -n 1000    # virements et dépôts valides entre 200 comptes fictifs
 go run ./cmd/injecter -mode doublons -n 100   # la même opération 100 fois
 go run ./cmd/injecter -mode corrompus -n 20   # IBAN faux, devise inconnue, montant négatif, JSON tronqué, schéma absent ou inconnu
+go run ./cmd/injecter -mode fanin             # 6 comptes neufs versent à un même compte → alerte fan_in
+go run ./cmd/injecter -mode cycle             # 80 000 € font A → B → C → A → alerte cycle
+go run ./cmd/injecter -mode especes           # 4 dépôts de 2 400 € dans le mois → alerte especes_fractionnees
+```
+
+Évaluer la détection contre la vérité terrain (superutilisateur : les rôles applicatifs n'y ont pas accès) :
+
+```bash
+docker compose exec -T postgres psql -U postgres -d grand_livre -f - < scripts/evaluer_detection.sql
 ```
 
 Réconciliation :
@@ -136,12 +172,17 @@ AMLworld et réconciliation Postgres ↔ Neo4j.
 ```
 schemas/transaction.v*.json   contrat du message, versions successives (Schema Registry, compatibilité BACKWARD)
 db/001_grand_livre.sql        grand livre, contraintes, outbox, vues de réconciliation
-db/002_evaluation.sql         vérité terrain, hors de portée du rôle applicatif
-ingestion/cmd/                ingestion, graphsink, reconcilier, rejouer, injecter (Go : franz-go, pgx, neo4j-go-driver)
+db/002_evaluation.sql         vérité terrain (étiquette, motif), hors de portée des rôles applicatifs
+db/003_alertes.sql            alertes et preuves (ajout seul), rôle detection restreint
+ingestion/cmd/                ingestion, graphsink, detecteur, reconcilier, rejouer, injecter (Go : franz-go, pgx, neo4j-go-driver, go-redis)
 outils/                       préparation du jeu AMLworld (Python, DuckDB)
 tests/                        tests de la préparation, sur un extrait écrit à la main
-scripts/                      vérification de bout en bout, chargement de la vérité terrain
+scripts/                      vérification de bout en bout, chargement de la vérité terrain, évaluation de la détection
 docs/decisions/               choix d'architecture argumentés
 ```
+
+Les scripts `db/*.sql` ne s'exécutent qu'à la création du volume Postgres : après un changement de
+schéma, repartir d'une base neuve (`docker compose down -v`, puis rejouer les données ; tout est
+reconstructible depuis le CSV AMLworld).
 
 Usage local uniquement : les mots de passe du Compose sont des valeurs de développement.

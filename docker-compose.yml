@@ -4,6 +4,7 @@
 #   Console Redpanda      http://localhost:18088
 #   Postgres (grand livre) localhost:15433   ingestion /metrics http://localhost:18090/metrics
 #   Neo4j                 http://localhost:17474 (bolt 17687)   graph-sink /metrics http://localhost:18091/metrics
+#   Redis (fenêtres)      localhost:16379                       détecteur /metrics http://localhost:18092/metrics
 
 services:
   redpanda:
@@ -40,7 +41,7 @@ services:
       - |
         set -e
         X="-X brokers=redpanda:9092 -X registry.hosts=redpanda:8081"
-        for t in transactions.raw transactions.dlq transactions.valid; do
+        for t in transactions.raw transactions.dlq transactions.valid transactions.graphe alerts.aml; do
           rpk topic create $$t -p 6 $$X || true
         done
         rpk registry compatibility-level set transactions.raw-value --level BACKWARD $$X
@@ -136,7 +137,48 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # État des fenêtres glissantes de la détection. appendonly : l'état survit à un redémarrage,
+  # sinon les épisodes d'alerte en cours seraient perdus.
+  redis:
+    image: redis:8.2-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "127.0.0.1:16379:6379"
+    volumes:
+      - redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  detecteur:
+    build:
+      context: ./ingestion
+      args: { CMD: detecteur }
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      DATABASE_URL: postgres://detection:detection@postgres:5432/grand_livre
+      REDIS_URL: redis://redis:6379/0
+      NEO4J_URI: neo4j://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: motdepasse-local
+      METRICS_ADDR: ":8092"
+    ports:
+      - "127.0.0.1:18092:8092"
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   redpanda:
   postgres:
   neo4j:
+  redis:

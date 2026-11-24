@@ -1,7 +1,9 @@
-// graph-sink : transactions.valid → Neo4j.
+// graph-sink : transactions.valid → Neo4j, puis relais vers transactions.graphe.
 //
 // Même garantie que l'ingestion : au moins une fois côté Kafka (offsets validés après l'écriture
-// Neo4j) + écriture idempotente (MERGE sur transaction_id, contrainte d'unicité).
+// Neo4j ET le relais) + écriture idempotente (MERGE sur transaction_id, contrainte d'unicité).
+// Le relais permet au détecteur de ne lire une opération qu'une fois qu'elle est dans le graphe :
+// sa recherche de cycles voit toujours un graphe à jour.
 package main
 
 import (
@@ -81,6 +83,13 @@ func run(ctx context.Context, log *slog.Logger) error {
 	}
 	defer consumer.CloseAllowingRebalance()
 
+	producer, err := kgo.NewClient(kgo.SeedBrokers(strings.Split(env("KAFKA_BROKERS", "localhost:19092"), ",")...),
+		kgo.RequiredAcks(kgo.AllISRAcks()))
+	if err != nil {
+		return err
+	}
+	defer producer.Close()
+
 	m := metrics.New()
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", m)
@@ -105,6 +114,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 		for start := 0; start < len(records); start += batchSize {
 			chunk := records[start:min(start+batchSize, len(records))]
 			batch := make([]tx.Transaction, 0, len(chunk))
+			relais := make([]*kgo.Record, 0, len(chunk))
 			for _, r := range chunk {
 				var t tx.Transaction
 				// Le message vient de l'outbox, déjà validé : s'il est illisible, c'est un bogue.
@@ -115,8 +125,19 @@ func run(ctx context.Context, log *slog.Logger) error {
 					continue
 				}
 				batch = append(batch, t)
+				relais = append(relais, &kgo.Record{Topic: graph.Topic, Key: r.Key, Value: r.Value})
 			}
-			if !writeWithRetry(ctx, log, w, m, batch) {
+			ok := len(batch) == 0 || retry(ctx, log, m, "écriture Neo4j", func(c context.Context) error {
+				created, err := w.Write(c, batch)
+				if err == nil {
+					m.Add("graphsink_ecrites_total", int64(created))
+					m.Add("graphsink_doublons_absorbes_total", int64(len(batch)-created))
+				}
+				return err
+			}) && (len(relais) == 0 || retry(ctx, log, m, "relais vers "+graph.Topic, func(c context.Context) error {
+				return producer.ProduceSync(c, relais...).FirstErr()
+			}))
+			if !ok {
 				return ctx.Err()
 			}
 			if err := consumer.CommitRecords(context.WithoutCancel(ctx), chunk...); err != nil {
@@ -127,22 +148,17 @@ func run(ctx context.Context, log *slog.Logger) error {
 	}
 }
 
-// writeWithRetry réessaie le lot jusqu'au succès ; false seulement si le service s'arrête.
-func writeWithRetry(ctx context.Context, log *slog.Logger, w graph.Writer, m *metrics.Counters, batch []tx.Transaction) bool {
-	if len(batch) == 0 {
-		return true
-	}
+// retry réessaie fn jusqu'au succès (délai de 30 s par essai) ; false seulement si le service s'arrête.
+func retry(ctx context.Context, log *slog.Logger, m *metrics.Counters, quoi string, fn func(context.Context) error) bool {
 	for wait := 200 * time.Millisecond; ; wait = min(2*wait, 10*time.Second) {
 		attempt, cancel := context.WithTimeout(ctx, 30*time.Second)
-		created, err := w.Write(attempt, batch)
+		err := fn(attempt)
 		cancel()
 		if err == nil {
-			m.Add("graphsink_ecrites_total", int64(created))
-			m.Add("graphsink_doublons_absorbes_total", int64(len(batch)-created))
 			return true
 		}
 		m.Add("graphsink_reessais_total", 1)
-		log.Warn("panne Neo4j, nouvel essai", "taille", len(batch), "err", err, "attente", wait)
+		log.Warn("panne, nouvel essai", "étape", quoi, "err", err, "attente", wait)
 		select {
 		case <-ctx.Done():
 			return false

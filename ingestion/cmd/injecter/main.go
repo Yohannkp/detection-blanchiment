@@ -3,6 +3,12 @@
 //	go run ./cmd/injecter -mode normal -n 1000     virements et dépôts valides entre 200 comptes fictifs
 //	go run ./cmd/injecter -mode doublons -n 100    la MÊME opération envoyée n fois (panne réseau simulée)
 //	go run ./cmd/injecter -mode corrompus -n 20    messages invalides (IBAN, devise, montant, JSON, schéma)
+//	go run ./cmd/injecter -mode fanin              6 comptes neufs versent chacun 3 500 à 4 800 € à un même compte
+//	go run ./cmd/injecter -mode cycle              80 000 € font A → B → C → A (2 % de commission par saut)
+//	go run ./cmd/injecter -mode especes            4 dépôts d'espèces de 2 400 € sur un compte neuf (9 600 € sur le mois)
+//
+// Les trois derniers scénarios utilisent des comptes neufs et affichent « entite: <IBAN> », le compte
+// sur lequel une alerte est attendue.
 //
 // Le simulateur complet (scénarios de blanchiment, rejeu AMLworld) viendra au lot 2 ; cet outil
 // sert à vérifier le socle de bout en bout.
@@ -14,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"math/rand/v2"
 	"strings"
 	"time"
@@ -25,7 +32,7 @@ import (
 )
 
 func main() {
-	mode := flag.String("mode", "normal", "normal | doublons | corrompus")
+	mode := flag.String("mode", "normal", "normal | doublons | corrompus | fanin | cycle | especes")
 	n := flag.Int("n", 100, "nombre de messages")
 	brokers := flag.String("brokers", "localhost:19092", "brokers Kafka")
 	registry := flag.String("registry", "http://localhost:18081", "Schema Registry")
@@ -72,6 +79,15 @@ func main() {
 		return t
 	}
 	encode := func(t tx.Transaction) []byte { return wire.Encode(schemaID, mustJSON(t)) }
+	// Comptes neufs, propres à cette exécution (banque 30002) : aucun historique, donc pas de plafond atteint.
+	neuf := func(k int) string {
+		return tx.MakeIBAN("FR", fmt.Sprintf("3000200002%011d00", (run/1000+int64(k))%100_000_000_000))
+	}
+	scenario := func(i int, debit, credit string, montant int64, il time.Duration) tx.Transaction {
+		return tx.Transaction{TransactionID: fmt.Sprintf("inj-%d-%d", run, i), BookedAt: time.Now().UTC().Add(-il),
+			PaymentType: "transfer", DebtorIBAN: debit, CreditorIBAN: credit, AmountMinor: montant, Currency: "EUR"}
+	}
+	entite := ""
 	key := func(t tx.Transaction) string { d, _ := t.Accounts(); return d }
 
 	switch *mode {
@@ -111,6 +127,27 @@ func main() {
 			}
 			add(key(t), v)
 		}
+	case "fanin":
+		entite = neuf(0)
+		for i := range 6 {
+			t := scenario(i, neuf(i+1), entite, 350_000+rng.Int64N(130_000), time.Duration(6-i)*time.Minute)
+			add(key(t), encode(t))
+		}
+	case "cycle":
+		a, b, cc := neuf(0), neuf(1), neuf(2)
+		entite = a
+		for i, saut := range [][2]string{{a, b}, {b, cc}, {cc, a}} {
+			montant := int64(8_000_000 * math.Pow(0.98, float64(i))) // 80 000 € moins 2 % par saut
+			t := scenario(i, saut[0], saut[1], montant, time.Duration(3-i)*time.Minute)
+			add(key(t), encode(t))
+		}
+	case "especes":
+		entite = neuf(0)
+		for i := range 4 {
+			t := scenario(i, "", entite, 240_000, time.Duration(4-i)*time.Minute)
+			t.PaymentType = "cash_deposit"
+			add(key(t), encode(t))
+		}
 	default:
 		log.Fatalf("mode inconnu %q", *mode)
 	}
@@ -121,6 +158,9 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Printf("%d message(s) « %s » envoyés (schéma %d)\n", len(recs), *mode, schemaID)
+	if entite != "" {
+		fmt.Println("entite:", entite)
+	}
 }
 
 func mustJSON(v any) []byte {

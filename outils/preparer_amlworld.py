@@ -3,7 +3,8 @@
 Entrée : le CSV de Kaggle (ealtman2019/ibm-transactions-for-anti-money-laundering-aml, licence CDLA-Sharing-1.0).
 Sorties (dans --sortie) :
   rejeu.csv    opérations à rejouer, triées par horodatage, au format du contrat transaction.v2
-  verite.csv   étiquette de chaque opération rejouée (n'entre JAMAIS dans le flux)
+  verite.csv   étiquette de chaque opération rejouée, et son motif si --motifs est donné
+               (n'entre JAMAIS dans le flux)
   comptes.csv  correspondance IBAN fictif ↔ banque/compte AMLworld
   bilan.json   ce qui a été gardé, écarté, et pourquoi
 
@@ -16,13 +17,14 @@ Choix (voir docs/decisions/002-donnees-amlworld.md) :
   - montants en unités mineures exactes : centièmes pour les devises fiduciaires (le jeu exprime aussi le yen
     au centième), satoshi (10⁻⁸) pour le bitcoin. Une conversion inexacte arrête le script.
 
-Usage : python outils/preparer_amlworld.py data/HI-Small_Trans.csv --sortie data --voisins 25
+Usage : python outils/preparer_amlworld.py data/HI-Small_Trans.csv --sortie data --voisins 25             --motifs data/HI-Small_Patterns.txt
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 import duckdb
@@ -60,7 +62,34 @@ def iban_fictif(banque: str, compte_hex: str) -> str:
     return f"FR{cle_iban:02d}{bban}"
 
 
-def preparer(source: Path, sortie: Path, voisins_pct: int) -> dict:
+COLONNES = ["ts", "banque_src", "compte_src", "banque_dst", "compte_dst",
+            "montant_recu", "devise_recue", "montant_paye", "devise_payee", "format", "blanchiment"]
+
+
+def lire_motifs(chemin: Path) -> list[tuple]:
+    """HI-Small_Patterns.txt : blocs « BEGIN LAUNDERING ATTEMPT - <MOTIF>: … » / lignes CSV / « END … ».
+
+    Renvoie (n° de tentative, motif, 11 champs bruts) pour chaque opération d'un motif.
+    """
+    lignes, tentative, motif = [], 0, None
+    for brute in chemin.read_text(encoding="utf-8").splitlines():
+        brute = brute.strip()
+        if brute.startswith("BEGIN LAUNDERING ATTEMPT"):
+            m = re.match(r"BEGIN LAUNDERING ATTEMPT - ([A-Z-]+)", brute)
+            if not m:
+                raise ValueError(f"en-tête de motif illisible : {brute!r}")
+            tentative, motif = tentative + 1, m.group(1).lower()
+        elif brute.startswith("END LAUNDERING ATTEMPT"):
+            motif = None
+        elif brute:
+            champs = brute.split(",")
+            if motif is None or len(champs) != len(COLONNES):
+                raise ValueError(f"ligne de motif hors bloc ou mal formée : {brute!r}")
+            lignes.append((tentative, motif, *champs))
+    return lignes
+
+
+def preparer(source: Path, sortie: Path, voisins_pct: int, motifs: Path | None = None) -> dict:
     sortie.mkdir(parents=True, exist_ok=True)
     c = duckdb.connect()
     c.execute("SET preserve_insertion_order = true")
@@ -69,12 +98,20 @@ def preparer(source: Path, sortie: Path, voisins_pct: int) -> dict:
         """
         CREATE TABLE brut AS
         SELECT row_number() OVER () AS ligne, *
-        FROM read_csv(?, header = true, all_varchar = true,
-             names = ['ts', 'banque_src', 'compte_src', 'banque_dst', 'compte_dst',
-                      'montant_recu', 'devise_recue', 'montant_paye', 'devise_payee', 'format', 'blanchiment'])
+        FROM read_csv(?, header = true, all_varchar = true, names = ?)
         """,
-        [str(source)],
+        [str(source), COLONNES],
     )
+
+    # Motifs : chaque opération d'un motif doit correspondre à exactement UNE ligne du CSV (tous champs égaux).
+    c.execute(f"CREATE TABLE motifs (tentative INT, motif VARCHAR, {', '.join(f'{k} VARCHAR' for k in COLONNES)})")
+    if motifs is not None:
+        c.executemany(f"INSERT INTO motifs VALUES ({', '.join(['?'] * (len(COLONNES) + 2))})", lire_motifs(motifs))
+    c.execute(f"CREATE TABLE motif_lignes AS SELECT m.tentative, m.motif, b.ligne FROM motifs m JOIN brut b USING ({', '.join(COLONNES)})")
+    n_motifs, n_lies, n_lignes = c.execute(
+        "SELECT (SELECT count(*) FROM motifs), count(*), count(DISTINCT ligne) FROM motif_lignes").fetchone()
+    if not n_motifs == n_lies == n_lignes:
+        raise ValueError(f"motifs : {n_motifs} opérations, {n_lies} correspondances, {n_lignes} lignes distinctes")
     total, illicites_total = c.execute("SELECT count(*), sum(blanchiment::INT) FROM brut").fetchone()
 
     c.execute(
@@ -183,7 +220,8 @@ def preparer(source: Path, sortie: Path, voisins_pct: int) -> dict:
         """
     )
     c.execute(
-        f"""COPY (SELECT 'AMLW-' || ligne AS transaction_id, blanchiment AS is_laundering FROM rejeu ORDER BY ligne)
+        f"""COPY (SELECT 'AMLW-' || r.ligne AS transaction_id, r.blanchiment AS is_laundering, m.motif, m.tentative
+                  FROM rejeu r LEFT JOIN motif_lignes m USING (ligne) ORDER BY r.ligne)
             TO '{(sortie / "verite.csv").as_posix()}' (HEADER, DELIMITER ',')"""
     )
     c.execute(
@@ -206,6 +244,8 @@ def preparer(source: Path, sortie: Path, voisins_pct: int) -> dict:
         "comptes_rejeu": len(comptes),
         "operations_rejeu": n,
         "illicites_rejeu": int(ill or 0),
+        "illicites_rejeu_dans_un_motif": c.execute(
+            "SELECT count(*) FROM rejeu JOIN motif_lignes USING (ligne)").fetchone()[0],
         "debut": str(debut),
         "fin": str(fin),
     }
@@ -218,10 +258,11 @@ def main() -> None:
     p.add_argument("source", type=Path)
     p.add_argument("--sortie", type=Path, default=Path("data"))
     p.add_argument("--voisins", type=int, default=25, help="part des voisins directs gardés, en %%")
+    p.add_argument("--motifs", type=Path, help="HI-Small_Patterns.txt (facultatif)")
     a = p.parse_args()
     if not 0 <= a.voisins <= 100:
         p.error("--voisins doit être entre 0 et 100")
-    print(json.dumps(preparer(a.source, a.sortie, a.voisins), ensure_ascii=False, indent=2))
+    print(json.dumps(preparer(a.source, a.sortie, a.voisins, a.motifs), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

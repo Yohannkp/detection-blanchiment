@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "outils"))
 from preparer_amlworld import iban_fictif, preparer  # noqa: E402
 
 EXTRAIT = Path(__file__).parent / "fixtures" / "amlworld_extrait.csv"
+MOTIFS = Path(__file__).parent / "fixtures" / "amlworld_motifs.txt"
 
 
 def iban_valide(iban: str) -> bool:
@@ -73,3 +74,19 @@ def test_voisins_zero_garde_seulement_les_comptes_illicites(tmp_path):
     bilan = preparer(EXTRAIT, tmp_path, voisins_pct=0)
     assert {o["transaction_id"] for o in lire(tmp_path / "rejeu.csv")} == {"AMLW-4", "AMLW-5"}
     assert bilan["comptes_rejeu"] == 3
+
+
+def test_motifs_relies_aux_operations(tmp_path):
+    bilan = preparer(EXTRAIT, tmp_path, voisins_pct=100, motifs=MOTIFS)
+    verite = {v["transaction_id"]: v for v in lire(tmp_path / "verite.csv")}
+    assert (verite["AMLW-4"]["motif"], verite["AMLW-4"]["tentative"]) == ("cycle", "1")
+    assert verite["AMLW-6"]["motif"] == ""  # opération licite : pas de motif
+    assert bilan["illicites_rejeu_dans_un_motif"] == 2
+
+
+def test_motif_sans_operation_correspondante_refuse(tmp_path):
+    faux = tmp_path / "motifs.txt"
+    faux.write_text(MOTIFS.read_text(encoding="utf-8").replace("3500.50,Euro,3500.50", "3500.51,Euro,3500.51"),
+                    encoding="utf-8")
+    with pytest.raises(ValueError, match="correspondances"):
+        preparer(EXTRAIT, tmp_path / "s", voisins_pct=100, motifs=faux)
