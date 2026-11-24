@@ -40,7 +40,7 @@ jobs:
           TEST_REDIS_URL: redis://localhost:6379/15
 
   preparation:
-    name: Préparation des données AMLworld (Python)
+    name: Données AMLworld, variables anti-fuite et scoreur (Python)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

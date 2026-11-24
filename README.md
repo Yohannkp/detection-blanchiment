@@ -4,10 +4,12 @@ Plateforme de streaming qui reçoit des opérations bancaires, les inscrit dans 
 double sans jamais compter deux fois le même euro, et détecte en flux les schémas de blanchiment dans le
 graphe des flux, avec des performances mesurées sur des données étiquetées que la détection n'a jamais vues.
 
-> **État : lots 1 (socle), 2 (données, graphe) et 3 (détection) terminés.** 176 060 opérations du jeu public
+> **État : lots 1 à 4 terminés (socle, données et graphe, détection, modèle).** 176 060 opérations du jeu public
 > IBM AMLworld traversent la plateforme ; grand livre et graphe concordent au centime ; sur la période de test,
 > les règles retrouvent **40 % des opérations illicites avec 41 % de précision** (plus de 80 % des motifs en
-> étoile), alertes levées en **~170 ms**. Le ML et l'interface viendront dans les lots suivants.
+> étoile), alertes levées en **~170 ms**. Un modèle LightGBM évalué dans le protocole de l'article AMLworld
+> (F1 **0,525** ; références publiées 0,48 à 0,63) et un modèle de service appris sur le grand livre lui-même
+> (F1 **0,73** contre 0,35 pour les règles, même fenêtre) note chaque alerte avec ses 3 raisons. L'interface viendra ensuite.
 
 ## Ce que fait le socle
 
@@ -88,6 +90,42 @@ opérations y sont illicites (le générateur termine ses tentatives), la préci
 Ces chiffres ne se comparent pas directement à ceux de l'article AMLworld (taux d'illicites et découpage
 différents).
 
+## Modèle
+
+LightGBM sur 49 variables calculées « au moment de l'opération » (fenêtres glissantes par compte, sans
+jamais regarder le futur : testé). **Deux modèles, même code**, parce qu'on ne peut pas à la fois se
+comparer à l'article (jeu complet) et servir sans écart d'entraînement (le grand livre ne contient qu'un
+sous-graphe). Décisions prises sur la validation, suivi et registre MLflow. Détails, essais ratés et
+correction de l'écart d'entraînement compris : [docs/decisions/004-modele.md](docs/decisions/004-modele.md).
+
+**Référence** : HI-Small complet (5 M d'opérations, 0,10 % illicites), protocole de l'article
+(découpage temporel 60/20/20, F1 de la classe illicite au seuil 0,5).
+
+| HI-Small, test (F1 classe illicite) | F1 |
+|---|---|
+| GIN + EU (article) | 0,477 |
+| **Ce projet : LightGBM, 3 graines** | **0,525 ± 0,027** (précision 0,75, rappel 0,40) |
+| PNA (article) | 0,568 |
+| GFP + LightGBM (article) | 0,629 |
+
+**Service** : appris sur les variables du grand livre (celles que voit le scoreur). Sur sa période de
+test hors fin du jeu (34 498 opérations, 2,9 % illicites) : **F1 0,727** (précision 0,67, rappel 0,80),
+contre **0,347** pour les règles du lot 3 sur la même fenêtre. Le **scoreur** (`ml/scoreur.py`) note
+chaque alerte en direct et écrit ses 3 raisons (contributions SHAP) ; pour trier les alertes, le gain est
+réel mais modeste : AUC 0,64 sur 63 alertes de la période de test (taux de base 0,62).
+
+```bash
+python -m venv .venv && .venv/Scripts/pip install -r requirements-ml.txt   # (Windows ; bin/ sous Linux)
+# Référence (≈ 15 min)
+python ml/calculer_variables.py data/HI-Small_Trans.csv data/variables_hi_small.parquet
+python ml/entrainer.py data/variables_hi_small.parquet
+# Service (≈ 3 min, plateforme lancée et rejeu fait)
+python ml/calculer_variables.py --grand-livre postgresql://postgres:postgres@localhost:15433/grand_livre data/variables_grand_livre.parquet
+python ml/entrainer.py data/variables_grand_livre.parquet --nom detection-blanchiment-lgbm-service --exporter modeles/production
+docker compose --profile modele up -d scoreur                                              # scores dans alertes_scores
+mlflow ui --backend-store-uri sqlite:///mlflow.db                                          # suivi des essais
+```
+
 ## Mesures et tests de panne (2026-11-23, PC portable, Docker Desktop)
 
 | Scénario | Résultat observé |
@@ -104,7 +142,7 @@ différents).
 1. **Socle** — ingestion, grand livre, DLQ, outbox, tests de panne *(fait)*
 2. **Données** — rejeu du jeu public IBM AMLworld, graphe Neo4j, réconciliation Postgres ↔ Neo4j *(fait)*
 3. **Détection** — règles à fenêtres glissantes, cycles dans le graphe, alertes, évaluation *(fait)*
-4. **ML** — score LightGBM expliqué par SHAP, suivi MLflow, évaluation contre la référence publiée
+4. **ML** — score LightGBM expliqué par SHAP, suivi MLflow, évaluation contre la référence publiée *(fait)*
 5. **Interface** — poste de l'analyste conformité (file d'alertes, dossier, piste d'audit)
 6. **Chaos et mesures** — scénarios de démonstration, test de charge
 
@@ -174,9 +212,11 @@ schemas/transaction.v*.json   contrat du message, versions successives (Schema R
 db/001_grand_livre.sql        grand livre, contraintes, outbox, vues de réconciliation
 db/002_evaluation.sql         vérité terrain (étiquette, motif), hors de portée des rôles applicatifs
 db/003_alertes.sql            alertes et preuves (ajout seul), rôle detection restreint
+db/004_scores.sql             scores et raisons du modèle (ajout seul), rôle scoreur
+ml/                           variables sans fuite (DuckDB), entraînement LightGBM + MLflow, scoreur en direct
 ingestion/cmd/                ingestion, graphsink, detecteur, reconcilier, rejouer, injecter (Go : franz-go, pgx, neo4j-go-driver, go-redis)
 outils/                       préparation du jeu AMLworld (Python, DuckDB)
-tests/                        tests de la préparation, sur un extrait écrit à la main
+tests/                        tests de la préparation, des variables (anti-fuite) et du scoreur
 scripts/                      vérification de bout en bout, chargement de la vérité terrain, évaluation de la détection
 docs/decisions/               choix d'architecture argumentés
 ```

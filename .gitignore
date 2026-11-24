@@ -4,3 +4,9 @@
 .env
 FICHE-PROJET.md
 CLAUDE.md
+.venv/
+mlruns/
+mlflow.db
+__pycache__/
+.pytest_cache/
+modeles/

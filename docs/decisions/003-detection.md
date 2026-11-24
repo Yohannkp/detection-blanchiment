@@ -107,7 +107,7 @@ limitent ce débit ; l'optimisation est prévue au lot 6.
 
 ## Comparaison avec la littérature : pas directe
 
-L'article AMLworld rapporte un F1 d'environ 0,57 (PNA) sur HI-Small. Nos chiffres **ne sont pas
+L'article AMLworld rapporte, sur HI-Small, un F1 de 0,568 pour le meilleur réseau de neurones sur graphe (PNA) et de 0,629 pour LightGBM avec variables de graphe (GFP + LightGBM, la meilleure référence avec XGBoost, 0,632). Nos chiffres **ne sont pas
 comparables** : nous travaillons sur un sous-graphe où 2,9 % des opérations sont illicites (2,6 % sur
 les jours 1-10, contre 0,10 % dans le jeu complet), avec un découpage temporel différent. Une comparaison
 honnête demandera d'évaluer le modèle du lot 4 dans les conditions de l'article.

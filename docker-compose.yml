@@ -177,6 +177,20 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Score (0-1) et raisons SHAP de chaque alerte, avec le modèle exporté par ml/entrainer.py.
+  scoreur:
+    build: ./ml
+    environment:
+      DATABASE_URL: postgresql://scoreur:scoreur@postgres:5432/grand_livre
+      MODELE: /app/modeles/production
+    volumes:
+      - ./modeles:/app/modeles:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles: ["modele"]  # démarre seulement si un modèle est entraîné : docker compose --profile modele up -d
+
 volumes:
   redpanda:
   postgres:
