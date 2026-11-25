@@ -14,7 +14,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -93,6 +95,25 @@ func run(ctx context.Context, log *slog.Logger) error {
 	m := metrics.New()
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", m)
+	// Chaos : panne simulée. Le graph-sink cesse de lire pendant n secondes (au plus 120), comme s'il était
+	// tombé ; le grand livre, lui, continue. Réseau interne et 127.0.0.1 seulement (voir docker-compose.yml).
+	var pauseJusqua atomic.Int64
+	mux.HandleFunc("POST /chaos/pause", func(w http.ResponseWriter, r *http.Request) {
+		// Un formulaire ou un fetch « no-cors » d'une page tierce ne peut pas poser ce Content-Type sans
+		// pré-vol CORS, que ce service ne valide jamais : la pause ne peut pas être forgée depuis le navigateur.
+		if strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0]) != "application/json" {
+			http.Error(w, "Content-Type application/json obligatoire", http.StatusUnsupportedMediaType)
+			return
+		}
+		secondes, err := strconv.Atoi(r.URL.Query().Get("secondes"))
+		if err != nil || secondes < 1 || secondes > 120 {
+			http.Error(w, "secondes : entier de 1 à 120", http.StatusBadRequest)
+			return
+		}
+		pauseJusqua.Store(time.Now().Add(time.Duration(secondes) * time.Second).UnixMilli())
+		log.Warn("chaos : graph-sink en pause", "secondes", secondes)
+		w.WriteHeader(http.StatusNoContent)
+	})
 	srv := &http.Server{Addr: env("METRICS_ADDR", ":18091"), Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -104,6 +125,18 @@ func run(ctx context.Context, log *slog.Logger) error {
 	log.Info("graph-sink démarré", "topic", ledger.ValidTopic)
 	for {
 		fetches := consumer.PollFetches(ctx)
+		// Pause testée APRÈS la lecture : la boucle attend presque toujours dans PollFetches, et les messages
+		// arrivés pendant la panne ne doivent pas passer. Ils restent en mémoire, non validés (rebalance bloqué
+		// au plus 120 s : acceptable pour une panne simulée de démonstration).
+		for time.Now().UnixMilli() < pauseJusqua.Load() {
+			m.Set("graphsink_en_pause", 1)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+		m.Set("graphsink_en_pause", 0)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}

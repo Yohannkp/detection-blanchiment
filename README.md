@@ -10,13 +10,15 @@ graphe des flux, avec des performances mesurées sur des données étiquetées q
 (`docs/demo/enregistrer_demo.js`) sur la plateforme lancée en local : un vrai cycle AMLworld est instruit et escaladé,
 puis un montage injecté traverse ingestion, graphe et détection et apparaît dans la file en quelques secondes.*
 
-> **État : lots 1 à 5 terminés (socle, données et graphe, détection, modèle, interface).** 176 060 opérations du jeu public
+> **État : lots 1 à 6 terminés (socle, données et graphe, détection, modèle, interface, chaos et débit).** 176 060 opérations du jeu public
 > IBM AMLworld traversent la plateforme ; grand livre et graphe concordent au centime ; sur la période de test,
 > les règles retrouvent **40 % des opérations illicites avec 41 % de précision** (plus de 80 % des motifs en
 > étoile), alertes levées en **~170 ms**. Un modèle LightGBM évalué dans le protocole de l'article AMLworld
 > (F1 **0,525** ; références publiées 0,48 à 0,63) et un modèle de service appris sur le grand livre lui-même
 > (F1 **0,73** contre 0,35 pour les règles, même fenêtre) note chaque alerte avec ses 3 raisons. L'analyste instruit
 > et décide dans **Filature**, et chaque décision entre dans une piste d'audit qu'on ne peut ni modifier ni effacer.
+> Une **console Chaos** joue des montages et des pannes depuis l'interface et vérifie elle-même la réaction ;
+> l'ingestion par lots a multiplié le débit par **environ 5** à conditions égales.
 
 ## Ce que fait le socle
 
@@ -143,15 +145,27 @@ Next.js ; détails et choix : [docs/decisions/005-interface.md](docs/decisions/0
 
 ![Un dossier de fan-out : 16 opérations vers 16 comptes en 4 jours, en 7 devises](docs/captures/filature-dossier-fan-out.png)
 
-## Mesures et tests de panne (2026-11-23, PC portable, Docker Desktop)
+## Console Chaos
+
+Le bouton « Chaos » de Filature joue des scénarios dont on connaît la réponse : schtroumpfage sous le seuil
+COSI, cycle par des sociétés écrans, **piège à faux positif** (une paie de 80 salaires qui ne doit lever
+aucune alerte), 100 doublons, 20 messages corrompus, panne du graph-sink. Chaque essai annonce ce qui doit
+se passer, et la console le vérifie sur l'API, coche par coche, avec le délai observé. Détails, limites et
+mesures : [docs/decisions/006-chaos-et-debit.md](docs/decisions/006-chaos-et-debit.md).
+
+![La console Chaos : six essais conformes, dont la panne du graph-sink (300 opérations de retard, rattrapées) et le piège de la paie](docs/captures/filature-chaos.png)
+
+## Mesures et tests de panne (2026-11-23 et 24, PC portable, Docker Desktop)
 
 | Scénario | Résultat observé |
 |---|---|
 | 1 000 opérations + 100 doublons + 20 messages corrompus | 1 001 écrites, 99 doublons absorbés, 20 en DLQ, écart 0 |
 | Ingestion tuée (`docker kill`) en plein lot de 5 000 | 5 000/5 000 écrites ; 610 messages relus après la reprise, tous absorbés ; reprise en 10 s ; écart 0 |
-| Postgres arrêté pendant l'envoi de 300 opérations | Message bloqué et réessayé toutes les 5 s (visible dans les journaux et `ingestion_reessais_total`) ; 300/300 écrites 2 s après le retour de la base ; écart 0 |
+| Postgres arrêté pendant l'envoi de 300 opérations (lot 1) | Message bloqué et réessayé toutes les 5 s (visible dans les journaux et `ingestion_reessais_total`) ; 300/300 écrites 2 s après le retour de la base ; écart 0. Depuis le lot 6, c'est le lot entier qui est bloqué et réessayé (attente doublée de 200 ms à 10 s, 30 s au plus par essai) |
 | Graph-sink tué en plein envoi de 8 000 opérations | Réconciliation en écart (3 694 opérations manquantes dans le graphe) pendant la panne ; rattrapage en 9 s après la relance ; écart 0 |
-| Rejeu complet AMLworld (176 060 opérations, envoi au plus vite) | Toutes écrites, 0 en DLQ ; grand livre équilibré ; graphe concordant ; ingestion seule : 4 à 9 min selon les essais (≈ 320 à 660 op/s) ; avec la détection : 20 min 41 s (≈ 140 op/s). Limites connues : un COMMIT Postgres par message, recherche de cycles sur ± 7 jours ; optimisation prévue au lot 6 |
+| Rejeu complet AMLworld (176 060 opérations, envoi au plus vite) | Toutes écrites, 0 en DLQ ; grand livre équilibré ; graphe concordant ; ingestion seule : 4 à 9 min selon les essais (≈ 320 à 660 op/s) ; avec la détection : 20 min 41 s (≈ 140 op/s). Mesure d'avant le lot 6 : un COMMIT Postgres par message, depuis remplacé par des lots (voir 006) ; non remesuré sur le rejeu complet |
+| Débit avant et après passage aux lots (lot 6), 20 000 opérations, mêmes conditions | Grand livre : 399 → **1 995 op/s** ; détection : 390 → 1 800 op/s. Remesuré sur une base deux fois plus grosse, machine chargée : ≈ 1 070 op/s (grand livre), ≈ 575 op/s (détection). Voir [006](docs/decisions/006-chaos-et-debit.md) |
+| Console Chaos, 6 essais (2026-11-24) | Tous conformes : 7/7 alertes du schtroumpfage, cycle, aucune alerte sur la paie en 30 s, 99 doublons absorbés, 20 en DLQ, graphe en retard de 300 opérations pendant la panne puis rattrapé |
 | Latence de détection, 18 scénarios injectés à vide | Médiane 168 ms, maximum 1,06 s entre l'ingestion de l'opération et la création de l'alerte |
 
 ## Feuille de route
@@ -161,7 +175,7 @@ Next.js ; détails et choix : [docs/decisions/005-interface.md](docs/decisions/0
 3. **Détection** — règles à fenêtres glissantes, cycles dans le graphe, alertes, évaluation *(fait)*
 4. **ML** — score LightGBM expliqué par SHAP, suivi MLflow, évaluation contre la référence publiée *(fait)*
 5. **Interface** — poste de l'analyste conformité (file d'alertes, dossier, décision, piste d'audit) *(fait)*
-6. **Chaos et mesures** — scénarios de démonstration, test de charge
+6. **Chaos et mesures** — console Chaos, ingestion par lots, test de charge *(fait)*
 
 ## Lancer
 
@@ -170,13 +184,15 @@ Prérequis : Docker, Go 1.26 (et Python 3.13 pour préparer les données).
 ```bash
 docker compose up -d --build           # toute la plateforme, API et interface comprises → http://localhost:3100
 docker compose --profile modele up -d scoreur   # scores des alertes (une fois le modèle entraîné, voir « Modèle »)
-bash scripts/verifier_bout_en_bout.sh  # 1 000 + 100 doublons + 20 corrompus, puis contrôles
+bash scripts/verifier_bout_en_bout.sh  # 1 000 + 100 doublons + 20 corrompus, scénarios, Chaos, puis contrôles
+bash scripts/mesurer_debit.sh 20000    # test de charge : temps d'absorption par étage
 ```
 
 | Service | Adresse |
 |---|---|
 | **Filature, le poste de l'analyste** | **http://localhost:3100** |
 | API de l'analyste (documentation : `/docs`) | http://localhost:18100 |
+| Service Chaos (scénarios, panne simulée) | http://localhost:18110/scenarios |
 | Console Redpanda (topics, DLQ, schémas) | http://localhost:18088 |
 | Métriques de l'ingestion | http://localhost:18090/metrics |
 | Postgres (grand livre) | `localhost:15433`, base `grand_livre` |
@@ -189,12 +205,14 @@ Envoyer des messages à la main :
 
 ```bash
 cd ingestion
-go run ./cmd/injecter -mode normal -n 1000    # virements et dépôts valides entre 200 comptes fictifs
+go run ./cmd/injecter -mode normal -n 1000    # virements et dépôts valides entre 200 comptes neufs
 go run ./cmd/injecter -mode doublons -n 100   # la même opération 100 fois
 go run ./cmd/injecter -mode corrompus -n 20   # IBAN faux, devise inconnue, montant négatif, JSON tronqué, schéma absent ou inconnu
 go run ./cmd/injecter -mode fanin             # 6 comptes neufs versent à un même compte → alerte fan_in
 go run ./cmd/injecter -mode cycle             # 80 000 € font A → B → C → A → alerte cycle
 go run ./cmd/injecter -mode especes           # 4 dépôts de 2 400 € dans le mois → alerte especes_fractionnees
+go run ./cmd/injecter -mode schtroumpfage     # 6 mules → 6 alertes especes_fractionnees + un fan_in
+go run ./cmd/injecter -mode paie              # piège : 80 salaires d'une entreprise établie → aucune alerte
 ```
 
 Évaluer la détection contre la vérité terrain (superutilisateur : les rôles applicatifs n'y ont pas accès) :

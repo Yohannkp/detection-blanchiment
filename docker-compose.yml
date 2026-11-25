@@ -184,6 +184,8 @@ services:
     environment:
       DATABASE_URL: postgresql://api:api@postgres:5432/grand_livre
       METRIQUES_INGESTION: http://ingestion:8090/metrics
+      NEO4J_URL: http://neo4j:7474
+      NEO4J_AUTH: neo4j/motdepasse-local
       ORIGINES: http://localhost:3100
     ports:
       - "127.0.0.1:18100:8000"
@@ -192,11 +194,29 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Console Chaos : joue les scénarios (montages, piège, doublons, corrompus) et simule la panne du graph-sink.
+  chaos:
+    build:
+      context: ./ingestion
+      args: { CMD: chaos }
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      SCHEMA_REGISTRY_URL: http://redpanda:8081
+      GRAPHSINK_URL: http://graph-sink:8091
+      ORIGINES: http://localhost:3100
+      ADRESSE: ":8095"
+    ports:
+      - "127.0.0.1:18110:8095"
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   # Interface Filature (Next.js). L'adresse de l'API est celle que voit le NAVIGATEUR de l'analyste.
   web:
     build:
       context: ./web
-      args: { NEXT_PUBLIC_API: "http://localhost:18100" }
+      args: { NEXT_PUBLIC_API: "http://localhost:18100", NEXT_PUBLIC_CHAOS: "http://localhost:18110" }
     ports:
       - "127.0.0.1:3100:3000"
     depends_on:

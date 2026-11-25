@@ -26,6 +26,8 @@ from pydantic import BaseModel, Field, field_validator
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://api:api@localhost:15433/grand_livre")
 METRIQUES_INGESTION = os.environ.get("METRIQUES_INGESTION", "http://localhost:18090/metrics")
+NEO4J_URL = os.environ.get("NEO4J_URL", "http://localhost:17474")
+NEO4J_AUTH = tuple(os.environ.get("NEO4J_AUTH", "neo4j/motdepasse-local").split("/", 1))
 MODELE_SERVICE = os.environ.get("MODELE_SERVICE", "detection-blanchiment-lgbm-service")
 ORIGINES = os.environ.get("ORIGINES", "http://localhost:3100").split(",")
 
@@ -60,7 +62,9 @@ _STATUT = """
 
 
 _cache_sante: tuple[float, dict] | None = None
+_cache_reconciliation: tuple[float, dict] | None = None
 _verrou_sante = asyncio.Lock()
+RECONCILIATION_S = 30  # parcours complet du grand livre : un contrôle, pas un compteur en direct
 
 
 @app.get("/sante")
@@ -73,13 +77,24 @@ async def sante() -> dict:
         return _cache_sante[1]
 
 
+async def _reconciliation() -> dict:
+    """Devises déséquilibrées et écritures manquantes (deux compteurs, sans unité : on n'additionne pas des
+    centimes, des yens et des satoshis). Elle parcourt tout le grand livre (0,1 s au repos, près de 1 s sous
+    charge sur 400 000 opérations) : recalculée au plus toutes les 30 s, pas toutes les 2 s."""
+    global _cache_reconciliation
+    if _cache_reconciliation is None or time.monotonic() - _cache_reconciliation[0] > RECONCILIATION_S:
+        r = (await requete("""
+            SELECT count(*) FILTER (WHERE ecart_minor <> 0) AS devises_en_ecart,
+                   coalesce(sum(abs(ecritures_manquantes)), 0)::bigint AS ecritures_manquantes
+              FROM v_reconciliation"""))[0]
+        _cache_reconciliation = (time.monotonic(), r)
+    return dict(_cache_reconciliation[1])
+
+
 async def _calculer_sante() -> dict:
-    r = (await requete(f"""
-        -- Réconciliation : devises déséquilibrées et écritures manquantes (deux compteurs, sans unité :
-        -- on n'additionne pas des centimes, des yens et des satoshis).
-        SELECT (SELECT count(*) FILTER (WHERE ecart_minor <> 0) FROM v_reconciliation) AS devises_en_ecart,
-               (SELECT coalesce(sum(abs(ecritures_manquantes)), 0)::bigint FROM v_reconciliation) AS ecritures_manquantes,
-               (SELECT count(*) FROM transactions) AS operations,
+    r = await _reconciliation()
+    r |= (await requete(f"""
+        SELECT (SELECT count(*) FROM transactions) AS operations,
                (SELECT count(*) FROM transactions WHERE ingested_at > now() - interval '60 seconds')::float / 60 AS debit,
                (SELECT count(*) FROM alertes) AS alertes,
                (SELECT count(*) FROM alertes a WHERE NOT EXISTS (SELECT 1 FROM decisions d WHERE d.alert_id = a.alert_id)) AS a_traiter,
@@ -88,18 +103,46 @@ async def _calculer_sante() -> dict:
                   FROM (SELECT * FROM alertes WHERE creee_le > now() - interval '10 minutes') a  -- direct seulement : un rejeu accéléré mesure la file d'attente
                   JOIN transactions t ON t.transaction_id = a.declencheur) AS latence_p50_ms
     """))[0]
-    r["dlq"] = await _dlq()
+    r.update(await _metriques_ingestion())
+    # Le graphe doit contenir toutes les opérations du grand livre : l'écart est son retard (ou sa panne).
+    r["graphe_operations"] = await _operations_dans_le_graphe()
+    r["graphe_en_retard"] = None if r["graphe_operations"] is None else r["operations"] - r["graphe_operations"]
     return r
 
 
-async def _dlq() -> int | None:
-    """Messages envoyés en DLQ depuis le démarrage de l'ingestion (compteurs Prometheus) ; None si injoignable."""
+async def _metriques_ingestion() -> dict:
+    """Compteurs Prometheus de l'ingestion depuis son démarrage (DLQ, doublons absorbés) ; None si injoignable."""
     try:
         async with httpx.AsyncClient(timeout=1.5) as c:
             texte = (await c.get(METRIQUES_INGESTION)).text
-        return sum(int(m) for m in re.findall(r"^ingestion_dlq_total\{[^}]*\} (\d+)$", texte, re.M))
+        dlq = sum(int(m) for m in re.findall(r"^ingestion_dlq_total\{[^}]*\} (\d+)$", texte, re.M))
+        doublons = re.search(r"^ingestion_doublons_absorbes_total (\d+)$", texte, re.M)
+        return {"dlq": dlq, "doublons_absorbes": int(doublons.group(1)) if doublons else 0}
     except (httpx.HTTPError, ValueError):
+        return {"dlq": None, "doublons_absorbes": None}
+
+
+async def _operations_dans_le_graphe(prefixe: str = "") -> int | None:
+    """Nombre d'opérations dans Neo4j (API de requête HTTP), toutes ou celles d'un préfixe ; None si injoignable."""
+    requete_graphe = ("MATCH ()-[r:TRANSFERRED]->() WHERE r.transaction_id STARTS WITH $p RETURN count(r) AS n" if prefixe
+                      else "MATCH ()-[r:TRANSFERRED]->() RETURN count(r) AS n")  # sans filtre : lu dans le compteur, instantané
+    try:
+        async with httpx.AsyncClient(timeout=1.5, auth=NEO4J_AUTH) as c:
+            rep = await c.post(f"{NEO4J_URL}/db/neo4j/query/v2",
+                               json={"statement": requete_graphe, "parameters": {"p": prefixe}})
+            return int(rep.json()["data"]["values"][0][0])
+    except (httpx.HTTPError, ValueError, KeyError, IndexError):
         return None
+
+
+@app.get("/operations")
+async def operations(prefixe: str = Query(pattern=r"^inj-[0-9]+-$", description="préfixe des identifiants d'un scénario Chaos")) -> dict:
+    """Opérations d'un scénario Chaos (ses identifiants partagent un préfixe) au grand livre et dans le graphe :
+    la console vérifie ainsi SON scénario, pas des compteurs globaux que d'autres essais font bouger.
+    Fenêtre d'une heure : l'index sur ingested_at évite de parcourir tout le grand livre."""
+    n = (await requete("""SELECT count(*) AS n FROM transactions
+                          WHERE ingested_at > now() - interval '1 hour' AND transaction_id LIKE %s || '%%'""", prefixe))[0]["n"]
+    return {"grand_livre": n, "graphe": await _operations_dans_le_graphe(prefixe)}
 
 
 @app.get("/alertes")
@@ -107,6 +150,7 @@ async def alertes(
     regle: Literal["fan_in", "fan_out", "cycle", "especes_fractionnees"] | None = None,
     statut: Literal["a_traiter", "traitees", "toutes"] = "a_traiter",
     tri: Literal["score", "recentes"] = "score",
+    entite: str | None = Query(None, max_length=64, description="compte au centre de l'alerte"),
     limite: int = Query(60, ge=1, le=500),
 ) -> list[dict]:
     return await requete(f"""
@@ -122,9 +166,10 @@ async def alertes(
                coalesce(st.decision, 'a_traiter') AS statut
         FROM alertes a JOIN p USING (alert_id) LEFT JOIN s USING (alert_id) LEFT JOIN st USING (alert_id)
         WHERE (%s::text IS NULL OR a.regle = %s)
+          AND (%s::text IS NULL OR a.entite = %s)
           AND (%s = 'toutes' OR (%s = 'a_traiter') = (st.decision IS NULL))
         ORDER BY CASE WHEN %s = 'score' THEN s.score END DESC NULLS LAST, a.creee_le DESC
-        LIMIT %s""", MODELE_SERVICE, regle, regle, statut, statut, tri, limite)
+        LIMIT %s""", MODELE_SERVICE, regle, regle, entite, entite, statut, statut, tri, limite)
 
 
 @app.get("/alertes/{alert_id}")

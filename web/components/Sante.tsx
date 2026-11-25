@@ -10,6 +10,8 @@ export default function Sante({ s, direct }: { s: S | null; direct: boolean }) {
           ? ["Grand livre", "équilibré", "ok"]
           : ["Grand livre", `${s.devises_en_ecart} devise(s) en écart · ${s.ecritures_manquantes} écriture(s) manquante(s)`, "ko"],
         ["Opérations", nb(s.operations)],
+        s.graphe_en_retard == null ? ["Graphe", "injoignable", "ko"]
+          : s.graphe_en_retard <= 0 ? ["Graphe", "à jour", "ok"] : ["Graphe", `${nb(s.graphe_en_retard)} en retard`, "attention"],
         ["Débit", s.debit ? `${s.debit.toLocaleString("fr-FR", { maximumFractionDigits: 1 })} op/s` : "—"],
         ["À traiter", `${nb(s.a_traiter)} / ${nb(s.alertes)}`],
         ["Latence p50", s.latence_p50_ms == null ? "—" : `${Math.round(s.latence_p50_ms)} ms`],

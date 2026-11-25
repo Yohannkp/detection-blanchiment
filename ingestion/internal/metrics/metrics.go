@@ -24,6 +24,13 @@ func (c *Counters) Add(series string, n int64) {
 	c.mu.Unlock()
 }
 
+// Set fixe une jauge (valeur instantanée, pas un compteur).
+func (c *Counters) Set(series string, v int64) {
+	c.mu.Lock()
+	c.v[series] = v
+	c.mu.Unlock()
+}
+
 func (c *Counters) Get(series string) int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()

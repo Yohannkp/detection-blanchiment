@@ -111,35 +111,44 @@ func run(ctx context.Context, log *slog.Logger) error {
 		fetches.EachError(func(t string, part int32, err error) {
 			log.Error("lecture Kafka", "topic", t, "partition", part, "err", err)
 		})
-		var done []*kgo.Record
-		fetches.EachRecord(func(r *kgo.Record) {
-			if ctx.Err() != nil {
-				return
+		// Lots de 500 messages : une transaction SQL (un COMMIT) par lot au lieu d'une par message.
+		records := fetches.Records()
+		for debut := 0; debut < len(records) && ctx.Err() == nil; debut += 500 {
+			lot := records[debut:min(debut+500, len(records))]
+			msgs := make([]ingest.Message, len(lot))
+			for i, r := range lot {
+				msgs[i] = ingest.Message{Value: r.Value, Partition: r.Partition, Offset: r.Offset}
 			}
-			msg := ingest.Message{Value: r.Value, Partition: r.Partition, Offset: r.Offset}
-			// Une panne bloque la partition sur ce message (jamais d'offset sauté) jusqu'au retour du service.
+			// Une panne bloque le lot (jamais d'offset sauté) jusqu'au retour du service ; le lot entier est
+			// réessayé, sans effet grâce à l'idempotence.
+			ok := false
 			for wait := 200 * time.Millisecond; ; wait = min(2*wait, 10*time.Second) {
 				// Délai par essai : sans lui, une base injoignable bloque l'appel sans bruit (constaté).
-				attempt, cancel := context.WithTimeout(ctx, 5*time.Second)
-				err := p.Process(attempt, msg)
+				attempt, cancel := context.WithTimeout(ctx, 30*time.Second)
+				err := p.ProcessBatch(attempt, msgs)
 				cancel()
-				if err == nil {
-					done = append(done, r)
-					return
+				if ok = err == nil; ok {
+					break
 				}
 				m.Add("ingestion_reessais_total", 1)
-				log.Warn("panne, nouvel essai", "partition", r.Partition, "offset", r.Offset, "err", err, "attente", wait)
+				log.Warn("panne, nouvel essai du lot", "taille", len(lot), "err", err, "attente", wait)
 				select {
 				case <-ctx.Done():
-					return
 				case <-time.After(wait):
 				}
+				if ctx.Err() != nil {
+					break
+				}
 			}
-		})
-		if len(done) > 0 {
-			// Contexte détaché : on valide ce qui est commité en base même pendant l'arrêt.
-			if err := consumer.CommitRecords(context.WithoutCancel(ctx), done...); err != nil {
+			if !ok {
+				break // arrêt pendant une panne : rien de commité, rien à valider
+			}
+			// Contexte détaché : on valide ce qui est commité en base même si l'arrêt arrive à cet instant.
+			if err := consumer.CommitRecords(context.WithoutCancel(ctx), lot...); err != nil {
 				log.Error("validation des offsets (les messages seront relus, sans effet grâce à l'idempotence)", "err", err)
+			}
+			if ctx.Err() != nil {
+				break
 			}
 		}
 		consumer.AllowRebalance()

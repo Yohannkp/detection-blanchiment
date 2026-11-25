@@ -6,6 +6,9 @@ export type Statut = "a_traiter" | "sans_suite" | "escalade" | "soupcon";
 export type Decision = Exclude<Statut, "a_traiter">;
 
 export interface Sante {
+  graphe_operations: number | null;
+  graphe_en_retard: number | null;
+  doublons_absorbes: number | null;
   devises_en_ecart: number;
   ecritures_manquantes: number;
   operations: number;
@@ -79,3 +82,20 @@ export async function decider(id: string, decision: Decision, justification: str
 }
 
 export const urlFlux = () => API.replace(/^http/, "ws") + "/flux";
+
+// Console Chaos (service ingestion/cmd/chaos).
+export const CHAOS = process.env.NEXT_PUBLIC_CHAOS ?? "http://localhost:18110";
+export interface Attendu { regle: Regle; entite: string }
+export interface ResultatChaos { nom: string; resume: string; messages?: number; prefixe?: string; attendus?: Attendu[]; absents?: Attendu[]; secondes?: number }
+
+async function envoyerChaos(chemin: string, corps: object = {}): Promise<ResultatChaos> {
+  const r = await fetch(CHAOS + chemin, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(corps) });
+  if (!r.ok) throw new Error(`${chemin} : ${(await r.text()).trim() || r.status}`);
+  return r.json();
+}
+export const lancerScenario = (nom: string) => envoyerChaos(`/scenarios/${encodeURIComponent(nom)}`);
+export const panneGraphe = (secondes: number) => envoyerChaos("/pannes/graphe", { secondes });
+export const alertesDuCompte = (entite: string) =>
+  lire<AlerteResume[]>(`/alertes?statut=toutes&entite=${encodeURIComponent(entite)}&limite=20`);
+export const operationsDuScenario = (prefixe: string) =>
+  lire<{ grand_livre: number; graphe: number | null }>(`/operations?prefixe=${encodeURIComponent(prefixe)}`);

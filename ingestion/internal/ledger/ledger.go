@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Yohannkp/detection-blanchiment/ingestion/internal/tx"
@@ -36,55 +38,116 @@ type Source struct {
 	Digest    [32]byte
 }
 
-// Write enregistre l'opération, ses deux écritures comptables et la ligne d'outbox dans UNE
-// transaction SQL. La clé primaire transaction_id rend l'écriture idempotente : rejouer le même
-// message (doublon réseau, reprise après panne) ne change rien. Un transaction_id déjà vu avec
-// un contenu différent est un conflit : *tx.Rejection, le message part en DLQ.
+// Item est une opération à écrire et la position de son message d'origine.
+type Item struct {
+	T   tx.Transaction
+	Src Source
+}
+
+// Issue dit ce que l'écriture d'un Item a produit : Written, Duplicate, ou un refus (message pour la DLQ).
+type Issue struct {
+	Result Result
+	Refus  *tx.Rejection
+}
+
+// Une seule instruction par opération : l'opération (clé primaire = idempotence), ses deux écritures
+// comptables et sa ligne d'outbox. Si l'opération existe déjà, rien n'est inséré (0 ligne renvoyée).
+const ecrireOperation = `
+WITH op AS (
+  INSERT INTO transactions (transaction_id, booked_at, payment_type, debtor_account, creditor_account,
+                            amount_minor, currency, payment_format, payload_sha256, source_partition, source_offset)
+  VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''), $9, $10, $11)
+  ON CONFLICT (transaction_id) DO NOTHING
+  RETURNING transaction_id),
+ecritures AS (
+  INSERT INTO ledger_entries (transaction_id, account, currency, amount_minor)
+  SELECT transaction_id, $4, $7, -$6::bigint FROM op
+  UNION ALL SELECT transaction_id, $5, $7, $6::bigint FROM op),
+annonce AS (
+  INSERT INTO outbox (topic, message_key, payload) SELECT $12, $4, $13 FROM op)
+SELECT count(*) FROM op`
+
+// WriteBatch écrit un lot d'opérations dans UNE transaction SQL (un seul COMMIT, donc une seule écriture
+// disque synchronisée pour tout le lot, au lieu d'une par opération). Chaque opération a son point de
+// sauvegarde : un refus des données (équilibre, contrainte) n'annule qu'elle, et devient un refus pour la DLQ.
+// Le contrôle d'équilibre, normalement différé au COMMIT, est avancé à la fin de chaque opération
+// (SET CONSTRAINTS … IMMEDIATE) : une opération fautive ne peut pas faire échouer tout le lot.
+// Toute autre erreur (base injoignable…) est renvoyée telle quelle : l'appelant réessaie le lot entier,
+// sans effet grâce à l'idempotence.
+func (s Store) WriteBatch(ctx context.Context, items []Item) ([]Issue, error) {
+	issues := make([]Issue, len(items))
+	err := pgx.BeginFunc(ctx, s.Pool, func(q pgx.Tx) error {
+		for i, it := range items {
+			payload, err := json.Marshal(it.T)
+			if err != nil {
+				return err
+			}
+			debit, credit := it.T.Accounts()
+			b := &pgx.Batch{}
+			b.Queue("SAVEPOINT operation")
+			var inserees int64
+			b.Queue(ecrireOperation, it.T.TransactionID, it.T.BookedAt, it.T.PaymentType, debit, credit, it.T.AmountMinor,
+				it.T.Currency, it.T.PaymentFormat, it.Src.Digest[:], it.Src.Partition, it.Src.Offset, ValidTopic, payload).
+				QueryRow(func(r pgx.Row) error { return r.Scan(&inserees) })
+			b.Queue("SET CONSTRAINTS ALL IMMEDIATE")
+			b.Queue("SET CONSTRAINTS ALL DEFERRED")
+			b.Queue("RELEASE SAVEPOINT operation")
+			if err := q.SendBatch(ctx, b).Close(); err != nil {
+				refus := RefusDesDonnees(err)
+				if refus == nil {
+					return err
+				}
+				if _, err := q.Exec(ctx, "ROLLBACK TO SAVEPOINT operation"); err != nil {
+					return err
+				}
+				issues[i] = Issue{Refus: refus}
+				continue
+			}
+			if inserees == 1 {
+				issues[i] = Issue{Result: Written}
+				continue
+			}
+			// Déjà enregistrée (doublon réseau, relecture après panne… ou même identifiant, autre contenu).
+			var stored []byte
+			if err := q.QueryRow(ctx, `SELECT payload_sha256 FROM transactions WHERE transaction_id = $1`,
+				it.T.TransactionID).Scan(&stored); err != nil {
+				return err
+			}
+			if !bytes.Equal(stored, it.Src.Digest[:]) {
+				issues[i] = Issue{Refus: &tx.Rejection{Reason: tx.ReasonIdempotencyConf,
+					Detail: fmt.Sprintf("transaction_id %s déjà enregistré avec un autre contenu", it.T.TransactionID)}}
+				continue
+			}
+			issues[i] = Issue{Result: Duplicate}
+		}
+		return nil
+	})
+	return issues, err
+}
+
+// Write enregistre une seule opération (lot de taille 1). Un refus est renvoyé comme *tx.Rejection.
 func (s Store) Write(ctx context.Context, t tx.Transaction, src Source) (Result, error) {
-	payload, err := json.Marshal(t)
+	issues, err := s.WriteBatch(ctx, []Item{{T: t, Src: src}})
 	if err != nil {
 		return 0, err
 	}
-	sum := src.Digest
-	debit, credit := t.Accounts()
+	if issues[0].Refus != nil {
+		return 0, issues[0].Refus
+	}
+	return issues[0].Result, nil
+}
 
-	var res Result
-	err = pgx.BeginFunc(ctx, s.Pool, func(q pgx.Tx) error {
-		tag, err := q.Exec(ctx, `
-			INSERT INTO transactions (transaction_id, booked_at, payment_type, debtor_account, creditor_account,
-			                          amount_minor, currency, payment_format, payload_sha256, source_partition, source_offset)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''), $9, $10, $11)
-			ON CONFLICT (transaction_id) DO NOTHING`,
-			t.TransactionID, t.BookedAt, t.PaymentType, debit, credit, t.AmountMinor, t.Currency,
-			t.PaymentFormat, sum[:], src.Partition, src.Offset)
-		if err != nil {
-			return err
-		}
-		if tag.RowsAffected() == 0 {
-			var stored []byte
-			if err := q.QueryRow(ctx, `SELECT payload_sha256 FROM transactions WHERE transaction_id = $1`,
-				t.TransactionID).Scan(&stored); err != nil {
-				return err
-			}
-			if !bytes.Equal(stored, sum[:]) {
-				return &tx.Rejection{Reason: tx.ReasonIdempotencyConf,
-					Detail: fmt.Sprintf("transaction_id %s déjà enregistré avec un autre contenu", t.TransactionID)}
-			}
-			res = Duplicate
-			return nil
-		}
-		if _, err := q.Exec(ctx, `
-			INSERT INTO ledger_entries (transaction_id, account, currency, amount_minor)
-			VALUES ($1, $2, $4, -$5::bigint), ($1, $3, $4, $5::bigint)`,
-			t.TransactionID, debit, credit, t.Currency, t.AmountMinor); err != nil {
-			return err
-		}
-		_, err = q.Exec(ctx, `INSERT INTO outbox (topic, message_key, payload) VALUES ($1, $2, $3)`,
-			ValidTopic, debit, payload)
-		res = Written
-		return err
-	})
-	return res, err
+// RefusDesDonnees reconnaît une erreur de contenu : refus de Postgres sur les données (classes SQLSTATE 22
+// et 23 : contrainte, équilibre, valeur invalide), qu'aucun nouvel essai ne corrigerait. nil sinon.
+func RefusDesDonnees(err error) *tx.Rejection {
+	if r, ok := IsRejection(err); ok {
+		return r
+	}
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) && (strings.HasPrefix(pg.Code, "22") || strings.HasPrefix(pg.Code, "23")) {
+		return &tx.Rejection{Reason: "refus_base", Detail: pg.Code + " " + pg.Message}
+	}
+	return nil
 }
 
 // OutboxMessage est une ligne d'outbox à publier.

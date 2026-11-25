@@ -1,6 +1,7 @@
 "use client";
 // Poste de l'analyste : file d'alertes, dossier, décision. Lien partageable : ?alerte=<identifiant>.
 import { useCallback, useEffect, useRef, useState } from "react";
+import Chaos from "@/components/Chaos";
 import Cote from "@/components/Cote";
 import Dossier from "@/components/Dossier";
 import FileAlertes, { type FiltreStatut } from "@/components/FileAlertes";
@@ -17,6 +18,8 @@ export default function Poste() {
   const [choisie, setChoisie] = useState<string | null>(null);
   const [dossier, setDossier] = useState<D | null>(null);
   const [erreur, setErreur] = useState<string | null>(null);
+  const [chaos, setChaos] = useState(false);
+  const fermerChaos = useCallback(() => setChaos(false), []);
   const choisieRef = useRef<string | null>(null);
   choisieRef.current = choisie;
 
@@ -93,8 +96,12 @@ export default function Poste() {
     <>
       <header className="bandeau">
         <div className="marque"><h1>Filature</h1><span>Poste de l'analyste conformité · lutte contre le blanchiment</span></div>
-        <Sante s={sante} direct={direct} />
+        <div className="droite">
+          <Sante s={sante} direct={direct} />
+          <button className="puce chaos-bouton" aria-pressed={chaos} onClick={() => setChaos((c) => !c)}>Chaos</button>
+        </div>
       </header>
+      {chaos && <Chaos sante={sante} fermer={fermerChaos} ouvrir={(id) => { setStatut("a_traiter"); setChoisie(id); }} />}
       <main className="poste">
         <section className="file">
           <FileAlertes alertes={alertes} choisie={choisie} choisir={setChoisie} regle={regle} setRegle={setRegle} statut={statut} setStatut={setStatut} tri={tri} setTri={setTri} />

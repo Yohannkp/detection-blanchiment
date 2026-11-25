@@ -54,6 +54,7 @@ def client():
                                                      'detection-blanchiment-lgbm-service v1', now())""", (ALERTE,))
     os.environ["DATABASE_URL"] = url_role(URL, "api")
     os.environ["METRIQUES_INGESTION"] = "http://127.0.0.1:1/metrics"  # injoignable : dlq vaut alors None
+    os.environ["NEO4J_URL"] = "http://127.0.0.1:1"  # graphe injoignable : son retard est inconnu (None), pas 0
     sys.path.insert(0, str(RACINE / "api"))
     from fastapi.testclient import TestClient
     import app as module
@@ -63,7 +64,8 @@ def client():
 
 def test_sante(client):
     s = client.get("/sante").json()
-    assert (s["devises_en_ecart"], s["ecritures_manquantes"]) == (0, 0) and s["operations"] >= 3 and s["dlq"] is None
+    assert (s["devises_en_ecart"], s["ecritures_manquantes"]) == (0, 0) and s["operations"] >= 3
+    assert s["dlq"] is s["doublons_absorbes"] is s["graphe_operations"] is s["graphe_en_retard"] is None
 
 
 def test_file_et_dossier(client):
@@ -72,6 +74,9 @@ def test_file_et_dossier(client):
     assert (a["n"], a["devises"], a["montant"], a["statut"]) == (3, 1, 294000, "a_traiter") and a["score"] == pytest.approx(0.91)
     assert client.get("/alertes?tri=recentes").json()[0]["alert_id"] == ALERTE  # la plus récente en tête
     assert client.get("/alertes?tri=inconnu").status_code == 422
+    # Filtre par compte (console Chaos) : toutes les alertes du compte A, aucune pour un compte inconnu.
+    assert ALERTE in [x["alert_id"] for x in client.get("/alertes?statut=toutes&entite=A&limite=500").json()]
+    assert client.get("/alertes?statut=toutes&entite=ZZ").json() == []
     d = client.get(f"/alertes/{ALERTE}").json()
     assert [p["transaction_id"] for p in d["preuves"]] == ["t1", "t2", "t3"]
     assert [e["quoi"] for e in d["audit"]][0] == "ouverture"
@@ -105,3 +110,9 @@ def test_contre_csrf(client):
 def test_le_role_api_ne_voit_pas_la_verite(client):
     with psycopg.connect(url_role(URL, "api")) as c, pytest.raises(psycopg.errors.InsufficientPrivilege):
         c.execute("SELECT count(*) FROM evaluation.verite_terrain")
+
+
+def test_operations_par_scenario(client):
+    # Console Chaos : comptage des opérations d'un scénario par préfixe (graphe injoignable ici : None, pas 0).
+    assert client.get("/operations?prefixe=inj-42-").json() == {"grand_livre": 0, "graphe": None}
+    assert client.get("/operations?prefixe=t").status_code == 422  # préfixe libre refusé : pas de LIKE arbitraire

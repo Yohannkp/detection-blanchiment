@@ -227,3 +227,38 @@ func TestOutboxPublieeUneFois(t *testing.T) {
 		t.Fatalf("publiées %d, attendu %d", got, pending)
 	}
 }
+
+// Un lot mêle opération neuve, doublon, conflit et opération refusée par la base : chaque issue est la
+// bonne, et le refus n'annule que l'opération fautive (point de sauvegarde), pas le reste du lot.
+func TestLotMixte(t *testing.T) {
+	s, ctx := openDB(t), context.Background()
+	a, b := newTx(t), newTx(t)
+	autreContenu := a
+	autreContenu.AmountMinor++
+	refusee := newTx(t)
+	refusee.AmountMinor = -5 // passe la validation de ce test mais viole CHECK (amount_minor > 0)
+	issues, err := s.WriteBatch(ctx, []Item{
+		{T: a, Src: src(a)}, {T: a, Src: src(a)}, {T: refusee, Src: src(refusee)},
+		{T: b, Src: src(b)}, {T: autreContenu, Src: src(autreContenu)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issues[0].Result != Written || issues[1].Result != Duplicate || issues[3].Result != Written {
+		t.Fatalf("issues %+v", issues)
+	}
+	if issues[2].Refus == nil || issues[2].Refus.Reason != "refus_base" {
+		t.Fatalf("opération refusée : %+v", issues[2])
+	}
+	if issues[4].Refus == nil || issues[4].Refus.Reason != tx.ReasonIdempotencyConf {
+		t.Fatalf("conflit : %+v", issues[4])
+	}
+	for _, id := range []string{a.TransactionID, b.TransactionID} {
+		if n := count(t, s, `SELECT count(*) FROM ledger_entries WHERE transaction_id = $1`, id); n != 2 {
+			t.Fatalf("%s : %d écritures, attendu 2", id, n)
+		}
+	}
+	if n := count(t, s, `SELECT count(*) FROM transactions WHERE transaction_id = $1`, refusee.TransactionID); n != 0 {
+		t.Fatal("l'opération refusée a été écrite")
+	}
+}

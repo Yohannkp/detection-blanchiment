@@ -89,7 +89,7 @@ jobs:
         with:
           go-version-file: ingestion/go.mod
           cache-dependency-path: ingestion/go.sum
-      - run: docker compose up -d --build redpanda postgres ingestion neo4j graph-sink redis detecteur api
+      - run: docker compose up -d --build redpanda postgres ingestion neo4j graph-sink redis detecteur api chaos
       - run: bash scripts/verifier_bout_en_bout.sh
       - uses: actions/setup-python@v7
         with:

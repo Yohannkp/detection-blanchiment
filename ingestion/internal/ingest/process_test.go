@@ -20,15 +20,26 @@ type fakeStore struct {
 	err  error
 }
 
-func (s *fakeStore) Write(_ context.Context, t tx.Transaction, _ ledger.Source) (ledger.Result, error) {
-	if s.err != nil {
-		return 0, s.err
+// Comme le vrai grand livre : un refus des données est une issue (→ DLQ), une panne est une erreur.
+func (s *fakeStore) WriteBatch(_ context.Context, items []ledger.Item) ([]ledger.Issue, error) {
+	issues := make([]ledger.Issue, len(items))
+	for i, it := range items {
+		if s.err != nil {
+			r := ledger.RefusDesDonnees(s.err)
+			if r == nil {
+				return nil, s.err
+			}
+			issues[i] = ledger.Issue{Refus: r}
+			continue
+		}
+		if s.seen[it.T.TransactionID] {
+			issues[i] = ledger.Issue{Result: ledger.Duplicate}
+			continue
+		}
+		s.seen[it.T.TransactionID] = true
+		issues[i] = ledger.Issue{Result: ledger.Written}
 	}
-	if s.seen[t.TransactionID] {
-		return ledger.Duplicate, nil
-	}
-	s.seen[t.TransactionID] = true
-	return ledger.Written, nil
+	return issues, nil
 }
 
 type fakeSchemas struct{ err error }

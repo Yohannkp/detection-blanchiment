@@ -4,7 +4,8 @@ COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY . .
 ARG NEXT_PUBLIC_API=http://localhost:18100
-ENV NEXT_PUBLIC_API=$NEXT_PUBLIC_API NEXT_TELEMETRY_DISABLED=1
+ARG NEXT_PUBLIC_CHAOS=http://localhost:18110
+ENV NEXT_PUBLIC_API=$NEXT_PUBLIC_API NEXT_PUBLIC_CHAOS=$NEXT_PUBLIC_CHAOS NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
 # Image minimale : serveur Next autonome (output: "standalone"), utilisateur non privilégié.

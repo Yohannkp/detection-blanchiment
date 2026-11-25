@@ -50,5 +50,15 @@ attendre "API de l'analyste" 'curl -fs localhost:18100/sante >/dev/null'
 curl -fs localhost:18100/sante | grep -q '"devises_en_ecart":0,"ecritures_manquantes":0' || { echo "ÉCHEC : l'API ne voit pas un grand livre équilibré" >&2; exit 1; }
 curl -fs "localhost:18100/alertes?regle=cycle&statut=toutes&limite=500" | grep -q '"regle":"cycle"'   || { echo "ÉCHEC : l'alerte de cycle n'apparaît pas dans la file de l'API" >&2; exit 1; }
 
-echo "OK : 1 001 opérations écrites, 99 doublons absorbés, 20 messages en DLQ, outbox publiée, écart 0,00 €, graphe Neo4j concordant, alertes fan-in, cycle et espèces fractionnées levées et visibles dans l'API"
+# Console Chaos : le schtroumpfage joué par le service doit lever toutes les alertes qu'il annonce,
+# visibles dans l'API par compte (c'est ce que l'interface vérifie en direct).
+rep=$(curl -fs -X POST -H 'content-type: application/json' -d '{}' localhost:18110/scenarios/schtroumpfage) || { echo "ÉCHEC : service Chaos injoignable" >&2; exit 1; }
+attendus=$(echo "$rep" | grep -o '"regle":"[a-z_]*","entite":"[A-Z0-9]*"' | sed 's/"regle":"\([a-z_]*\)","entite":"\([A-Z0-9]*\)"/\1:\2/')
+[ "$(echo "$attendus" | wc -l)" -eq 7 ] || { echo "ÉCHEC : le schtroumpfage devrait annoncer 7 alertes : $rep" >&2; exit 1; }
+for a in $attendus; do
+  attendre "alerte ${a%%:*} sur ${a#*:} (Chaos)" "curl -fs 'localhost:18100/alertes?statut=toutes&entite=${a#*:}' | grep -q '\"regle\":\"${a%%:*}\"'"
+done
+attendre "graphe à jour dans la santé de l'API" 'curl -fs localhost:18100/sante | grep -q "\"graphe_en_retard\":0"'
+
+echo "OK : 1 001 opérations écrites, 99 doublons absorbés, 20 messages en DLQ, outbox publiée, écart 0,00 €, graphe Neo4j concordant, alertes fan-in, cycle et espèces fractionnées levées et visibles dans l'API, schtroumpfage de la console Chaos détecté (7 alertes)"
 curl -fs localhost:18090/metrics
