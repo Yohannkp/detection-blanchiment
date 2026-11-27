@@ -145,6 +145,7 @@ mlflow ui --backend-store-uri sqlite:///mlflow.db                               
 | Données | Flux en direct | Instantané des vraies données : 176 060 opérations AMLworld, 791 alertes, 694 dossiers |
 | Décisions | Inscrites au journal d'audit (ajout seul) | Possibles, gardées dans le navigateur du visiteur seulement |
 | Console Chaos | Joue les scénarios sur la plateforme | Rejoue, à leur rythme réel, six essais faits sur la plateforme complète |
+| Simuler un montage | — (la console Chaos injecte de vrais montages) | Cycle, afflux, schtroumpfage ou piège de la paie : les règles de détection, portées à l'identique en TypeScript (`web/lib/simulation.ts`, 16 tests), tournent dans le navigateur ; les alertes entrent dans la file avec leur dossier, à instruire. Sans score du modèle |
 
 La version en ligne réutilise exactement l'interface de la plateforme : seul le client API change de source
 (`NEXT_PUBLIC_STATIQUE`, `web/lib/api.ts`). L'instantané est écrit par `scripts/instantane_web.py`, plateforme

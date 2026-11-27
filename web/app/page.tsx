@@ -2,6 +2,7 @@
 // Poste de l'analyste : file d'alertes, dossier, décision. Lien partageable : ?alerte=<identifiant>.
 import { useCallback, useEffect, useRef, useState } from "react";
 import Chaos from "@/components/Chaos";
+import Simulation from "@/components/Simulation";
 import Cote from "@/components/Cote";
 import Dossier from "@/components/Dossier";
 import FileAlertes, { type FiltreStatut } from "@/components/FileAlertes";
@@ -18,8 +19,8 @@ export default function Poste() {
   const [choisie, setChoisie] = useState<string | null>(null);
   const [dossier, setDossier] = useState<D | null>(null);
   const [erreur, setErreur] = useState<string | null>(null);
-  const [chaos, setChaos] = useState(false);
-  const fermerChaos = useCallback(() => setChaos(false), []);
+  const [tiroir, setTiroir] = useState<"chaos" | "simulation" | null>(null);
+  const fermerTiroir = useCallback(() => setTiroir(null), []);
   const choisieRef = useRef<string | null>(null);
   choisieRef.current = choisie;
 
@@ -99,10 +100,15 @@ export default function Poste() {
         <div className="marque"><h1>Filature</h1><span>Poste de l'analyste conformité · lutte contre le blanchiment</span></div>
         <div className="droite">
           <Sante s={sante} direct={direct} />
-          <button className="puce chaos-bouton" aria-pressed={chaos} onClick={() => setChaos((c) => !c)}>Chaos</button>
+          {STATIQUE && <button className="puce simuler-bouton" aria-pressed={tiroir === "simulation"}
+            onClick={() => setTiroir((t) => (t === "simulation" ? null : "simulation"))}>Simuler un montage</button>}
+          <button className="puce chaos-bouton" aria-pressed={tiroir === "chaos"} onClick={() => setTiroir((t) => (t === "chaos" ? null : "chaos"))}>Chaos</button>
         </div>
       </header>
-      {chaos && <Chaos sante={sante} fermer={fermerChaos} ouvrir={(id) => { setStatut("a_traiter"); setChoisie(id); }} />}
+      {tiroir === "chaos" && <Chaos sante={sante} fermer={fermerTiroir} ouvrir={(id) => { setStatut("a_traiter"); setChoisie(id); }} />}
+      {tiroir === "simulation" && <Simulation fermer={fermerTiroir}
+        ouvrir={(id) => { setTiroir(null); setChoisie(id); }}
+        apres={() => { setRegle(null); setStatut("a_traiter"); setTri("recentes"); rafraichirRef.current(); }} />}
       <main className="poste">
         <section className="file">
           <FileAlertes alertes={alertes} choisie={choisie} choisir={setChoisie} regle={regle} setRegle={setRegle} statut={statut} setStatut={setStatut} tri={tri} setTri={setTri} />

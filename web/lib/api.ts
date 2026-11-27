@@ -1,4 +1,5 @@
 // Accès à l'API de l'analyste (api/app.py).
+import { alertesSimulees, dossierSimule, estSimulee } from "./simulation";
 export const API = process.env.NEXT_PUBLIC_API ?? "http://localhost:18100";
 /** Version en ligne (GitHub Pages) : pas d'API, un instantané des vraies données en JSON (scripts/instantane_web.py). */
 export const STATIQUE = process.env.NEXT_PUBLIC_STATIQUE === "1";
@@ -92,10 +93,16 @@ export async function lireAlertes(regle: Regle | null, statut: "a_traiter" | "tr
   const liste = await lire<AlerteResume[]>(`/alertes?statut=${statut}&tri=${tri}${regle ? `&regle=${regle}` : ""}&limite=200`);
   if (!STATIQUE) return liste;
   const statutLocal = (a: AlerteResume): AlerteResume => ({ ...a, statut: decisionsLocales.get(a.alert_id)?.at(-1)?.decision ?? a.statut });
-  return statut === "a_traiter" ? liste.filter((a) => !decisionsLocales.has(a.alert_id)) : liste.map(statutLocal);
+  // Alertes simulées dans le navigateur : sans score, donc en tête des « récentes » et après les notées (comme l'API).
+  const simulees = alertesSimulees().filter((a) => !regle || a.regle === regle).map(statutLocal)
+    .sort((a, b) => b.creee_le.localeCompare(a.creee_le));
+  const toutes = tri === "recentes" ? [...simulees, ...liste] : [...liste, ...simulees];
+  return statut === "a_traiter" ? toutes.filter((a) => !decisionsLocales.has(a.alert_id))
+    : toutes.map(statutLocal).filter((a) => a.statut !== "a_traiter");
 }
 export async function lireDossier(id: string) {
-  const d = await lire<Dossier>(`/alertes/${encodeURIComponent(id)}`);
+  const simule = STATIQUE && estSimulee(id) ? dossierSimule(id) : undefined;
+  const d = simule ?? await lire<Dossier>(`/alertes/${encodeURIComponent(id)}`);
   const locales = STATIQUE ? decisionsLocales.get(id) ?? [] : [];
   return { ...d, decisions: [...d.decisions, ...locales],
     audit: [...d.audit, ...locales.map((x) => ({ quand: x.decidee_le, quoi: "decision" as const, detail: `${x.decision} · ${x.analyste}` }))] };

@@ -46,7 +46,9 @@ export default function Cote({ d, apres }: { d: Dossier; apres: () => void }) {
     <>
       <div>
         <div className="titre"><span>Pourquoi ce score</span>{d.score && <span>{score(d.score.score)}</span>}</div>
-        {raisons.length === 0 && <p className="explication">Le modèle n'a pas encore noté ce dossier.</p>}
+        {raisons.length === 0 && <p className="explication">{d.alerte.alert_id.includes("-sim")
+          ? "Dossier simulé dans votre navigateur : les règles ont tourné ici, mais le modèle LightGBM, lui, ne tourne que sur la plateforme complète."
+          : "Le modèle n'a pas encore noté ce dossier."}</p>}
         {raisons.map((r) => (
           <div className="raison" key={r.variable}>
             <div className="l"><span>{libelleVariable(r.variable)}</span><b>{valeurRaison(r)}</b></div>

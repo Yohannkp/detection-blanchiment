@@ -30,7 +30,7 @@ export default function Dossier({ d }: { d: D }) {
         </div>
         <div className="score-dossier">
           <b>{score(d.score?.score ?? null)}</b>
-          <small>{d.score ? `probabilité estimée · ${d.score.modele.replace("detection-blanchiment-lgbm-", "modèle de ")}` : "score en cours de calcul"}</small>
+          <small>{d.score ? `probabilité estimée · ${d.score.modele.replace("detection-blanchiment-lgbm-", "modèle de ")}` : d.alerte.alert_id.includes("-sim") ? "pas de score : simulation dans le navigateur" : "score en cours de calcul"}</small>
         </div>
       </div>
 
