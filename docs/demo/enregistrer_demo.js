@@ -12,7 +12,7 @@ const puppeteer = require("puppeteer-core");
 
 const CHROME = process.env.CHROME ?? "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const URL = process.env.URL ?? "http://localhost:3100";
-const BOUT = process.env.BOUT ?? "0976 25";  // fin d'IBAN du compte au centre d'un vrai cycle AMLworld à traiter (cycle-4dec3c5b)
+const BOUT = process.env.BOUT ?? "4128 43";  // fin d'IBAN du compte au centre d'un vrai cycle AMLworld à traiter (cycle-38221be6)
 const INJECTEUR = path.resolve(__dirname, "../../.context/injecter.exe");
 const IMAGES = path.join(__dirname, "images");
 const L = 1600, H = 1000;
@@ -40,6 +40,7 @@ const pause = (ms) => new Promise((r) => setTimeout(r, ms));
         font: 500 21px/1.35 var(--police-sans), Inter, sans-serif; box-shadow: 0 14px 40px rgba(31,29,26,.28);
         transition: opacity .35s ease; pointer-events: none; }
       #st-demo.haut { top: 82px; bottom: auto; }
+      #st-demo.gauche { left: 574px; max-width: 1000px; }  /* à gauche du tiroir Chaos (452 px) */
       #st-demo b { font: 600 23px var(--police-serif), Georgia, serif; color: #F2DDD6; }
       #curseur-demo { position: fixed; z-index: 10001; width: 22px; height: 22px; pointer-events: none; transform: translate(-3px, -2px);
         transition: left .45s cubic-bezier(.3,.7,.2,1), top .45s cubic-bezier(.3,.7,.2,1); }
@@ -51,10 +52,10 @@ const pause = (ms) => new Promise((r) => setTimeout(r, ms));
     c.style.left = "800px"; c.style.top = "520px"; document.body.appendChild(c);
   });
   // Sous-titre en bas, ou en haut (sous le bandeau) quand l'action se passe dans le bas de l'écran.
-  const sousTitre = (html, haut = false) => page.evaluate((html, haut) => {
+  const sousTitre = (html, haut = false, gauche = false) => page.evaluate((html, haut, gauche) => {
     const st = document.getElementById("st-demo"); st.innerHTML = html; st.style.opacity = html ? "1" : "0";
-    st.classList.toggle("haut", haut);
-  }, html, haut);
+    st.classList.toggle("haut", haut); st.classList.toggle("gauche", gauche);
+  }, html, haut, gauche);
   const surligner = (sel) => page.evaluate((sel) => {
     document.querySelectorAll(".surligne-demo").forEach((e) => e.classList.remove("surligne-demo"));
     if (sel) document.querySelector(sel)?.classList.add("surligne-demo");
@@ -104,7 +105,7 @@ const pause = (ms) => new Promise((r) => setTimeout(r, ms));
   await aller(await page.$(".file nav"), { attente: 1600 });
   await aller(await boutonTexte("Cycle"), { cliquer: true, attente: 1400 });
   const cible = await page.waitForFunction(
-    (bout) => [...document.querySelectorAll(".alerte")].find((b) => b.textContent.includes(bout)), {}, BOUT);
+    (bout) => [...document.querySelectorAll(".alerte")].find((b) => b.querySelector(".regle")?.textContent === "Cycle" && b.textContent.includes(bout)), {}, BOUT);
   await aller(cible.asElement(), { cliquer: true, attente: 1800 });
   // Garde-fou : la suite (et la décision) ne doit porter que sur le dossier visé.
   await page.waitForFunction((bout) => document.querySelector(".entete")?.textContent.replace(/\s/g, "").includes(bout.replace(" ", "")), { timeout: 8000 }, BOUT);
@@ -116,7 +117,7 @@ const pause = (ms) => new Promise((r) => setTimeout(r, ms));
   for (const ligne of (await page.$$(".flux tbody tr")).slice(0, 7)) await aller(ligne, { attente: 900 });
   await page.mouse.move(10, 990);
   await surligner(".frise");
-  await sousTitre("La frise montre le rythme du montage : l'argent fait le tour de quatre comptes en quelques jours", true);
+  await sousTitre("La frise montre le rythme du montage : l'argent fait le tour de trois comptes en quelques jours", true);
   await pause(4200);
   await surligner(".cote > div:first-child");
   await sousTitre("Pourquoi ce score : les raisons du modèle, traduites en mots pour l'analyste");
@@ -128,7 +129,7 @@ const pause = (ms) => new Promise((r) => setTimeout(r, ms));
   await aller(await boutonTexte("Escalader au niveau 2"), { cliquer: true, attente: 700 });
   const zone = await page.$("textarea");
   await aller(zone, { cliquer: true, attente: 300 });
-  await page.keyboard.type("Boucle de quatre comptes en quelques jours : l'argent revient à son point de départ. À approfondir.", { delay: 24 });
+  await page.keyboard.type("Boucle de trois comptes en quelques jours : l'argent revient à son point de départ. À approfondir.", { delay: 24 });
   await pause(600);
   await aller(await boutonTexte("Enregistrer"), { cliquer: true, attente: 1200 });
   await page.waitForFunction(() => document.querySelector(".etiquette-statut")?.textContent.includes("Escalad"), { timeout: 10000 });
@@ -154,8 +155,66 @@ const pause = (ms) => new Promise((r) => setTimeout(r, ms));
   await sousTitre("A → B → C → A en trois minutes : la règle de cycle l'a vu. Le modèle, appris sur AMLworld, le juge peu suspect : les deux se complètent");
   await pause(5200);
 
-  // 6. Fin
+  // 6. La console Chaos : quatre essais, vérifiés par la console elle-même sur l'API.
+  const st = (html) => sousTitre(html, false, true);
+  await st("Et si on essayait de la piéger ? La console <b>Chaos</b> provoque attaques et pannes");
+  await aller(await page.$(".chaos-bouton"));  // pas de clic par aller() : il borne y à 90 px, le bouton est au-dessus
+  await page.click(".chaos-bouton");
+  await pause(1400);
+  const jouer = async (titre) => {
+    const li = await page.waitForFunction((t) => [...document.querySelectorAll(".scenarios li")].find((l) => l.querySelector("b")?.textContent.startsWith(t)), {}, titre);
+    await page.waitForFunction(() => [...document.querySelectorAll(".scenarios button")].every((b) => !b.disabled));
+    await aller(await li.asElement().$("button"), { cliquer: true, attente: 400 });
+  };
+  const essai = (titre) => page.evaluate((t) => [...document.querySelectorAll(".essai")].find((e) => e.querySelector("header b").textContent.startsWith(t))?.querySelector(".verdict").textContent, titre);
+  const voirJournal = () => page.evaluate(() => {
+    const c = document.querySelector(".chaos"), j = document.querySelector(".essai");
+    if (j) c.scrollTo({ top: j.offsetTop - 90, behavior: "smooth" });
+  });
+
+  await st("Schtroumpfage : six mules déposent des espèces sous le seuil de 10 000 €, puis virent tout au même compte");
+  await jouer("Schtroumpfage");
+  await page.waitForFunction(() => document.querySelector(".essai .verdict")?.textContent === "conforme", { timeout: 30000 });
+  await voirJournal();
+  await surligner(".essai");
+  await st("Les sept alertes attendues sont levées : la console les vérifie une à une sur l'API");
+  await pause(4200);
+  await surligner(null);
+  await page.evaluate(() => document.querySelector(".chaos").scrollTo({ top: 0, behavior: "smooth" }));
+  await pause(700);
+
+  await st("Le piège : une entreprise établie verse 80 salaires le même jour. Aucune alerte ne doit sortir");
+  await jouer("Piège");
+  await pause(2400);
+  await st("100 fois la même opération, comme après une coupure réseau : elle ne doit compter qu'une fois");
+  await jouer("100 doublons");
+  await pause(2600);
+  await st("Et une panne : le graphe s'arrête 20 secondes pendant que 300 opérations arrivent");
+  await jouer("Panne");
+  await pause(1500);
+  await voirJournal();
+  await page.waitForFunction(() => document.querySelector(".essai li.ok"), { timeout: 15000 });
+  await surligner(".essai");
+  await st("Le grand livre écrit tout. Le graphe, lui, prend du retard : 300 opérations lui manquent");
+  await page.waitForFunction(() => [...document.querySelectorAll(".essai")][0]?.querySelectorAll("li.ok").length >= 2, { timeout: 20000 });
+  await pause(3500);
+  await st("Pendant la panne, la détection attend le graphe : les alertes seront retardées, jamais perdues");
+  // « Fin de la panne » seulement quand le graphe a vraiment tout rattrapé (3e vérification de l'essai).
+  await page.waitForFunction(() => [...document.querySelectorAll(".essai")][0]?.querySelectorAll("li.ok").length >= 3, { timeout: 60000, polling: 300 });
+  await st("Fin de la panne : le graphe rattrape tout, sans rien perdre ni compter deux fois");
+  await pause(3500);
+  await page.waitForFunction(() => [...document.querySelectorAll(".essai .verdict")].slice(0, 4).every((v) => v.textContent === "conforme"), { timeout: 90000, polling: 300 });
+  await surligner(null);
+  await page.evaluate(() => document.querySelector(".chaos").scrollTo({ top: 1e5, behavior: "smooth" }));
+  await pause(800);
+  for (const t of ["Schtroumpfage", "Piège", "100 doublons", "Panne"]) if ((await essai(t)) !== "conforme") throw new Error(`essai ${t} : ${await essai(t)}`);
+  await st("Quatre essais, quatre verdicts <b>conformes</b>, vérifiés opération par opération");
+  await pause(4800);
+
+  // 7. Fin
   await page.mouse.move(10, 990);
+  await page.evaluate(() => document.querySelector(".fermer")?.click());
+  await pause(400);
   await sousTitre("<b>Filature</b> · Go · Kafka · Postgres · Neo4j · Redis · LightGBM · FastAPI · Next.js<br><span style='font-size:17px;opacity:.85'>github.com/Yohannkp/detection-blanchiment</span>");
   await pause(4500);
 

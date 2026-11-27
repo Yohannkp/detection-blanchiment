@@ -4,11 +4,12 @@ Plateforme de streaming qui reçoit des opérations bancaires, les inscrit dans 
 double sans jamais compter deux fois le même euro, et détecte en flux les schémas de blanchiment dans le
 graphe des flux, avec des performances mesurées sur des données étiquetées que la détection n'a jamais vues.
 
-![Démonstration de Filature : file d'alertes, dossier d'un cycle, raisons du score, décision de l'analyste, puis un montage injecté en direct qui apparaît en tête de file](docs/demo/demo.gif)
+![Démonstration de Filature : file d'alertes, dossier d'un cycle, raisons du score, décision de l'analyste, montage injecté en direct, puis la console Chaos (schtroumpfage, piège de la paie, doublons, panne du graphe)](docs/demo/demo.gif)
 
-*Démonstration de 74 s (version nette : [docs/demo/demo.mp4](docs/demo/demo.mp4)), enregistrée par un navigateur piloté
+*Démonstration de 2 min 10 (version nette : [docs/demo/demo.mp4](docs/demo/demo.mp4)), enregistrée par un navigateur piloté
 (`docs/demo/enregistrer_demo.js`) sur la plateforme lancée en local : un vrai cycle AMLworld est instruit et escaladé,
-puis un montage injecté traverse ingestion, graphe et détection et apparaît dans la file en quelques secondes.*
+un montage injecté traverse ingestion, graphe et détection et apparaît dans la file en quelques secondes, puis la console
+Chaos joue quatre essais (schtroumpfage, piège de la paie, doublons, panne du graphe), tous vérifiés conformes.*
 
 > **État : lots 1 à 6 terminés (socle, données et graphe, détection, modèle, interface, chaos et débit).** 176 060 opérations du jeu public
 > IBM AMLworld traversent la plateforme ; grand livre et graphe concordent au centime ; sur la période de test,
