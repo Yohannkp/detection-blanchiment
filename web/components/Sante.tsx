@@ -25,9 +25,13 @@ export default function Sante({ s, direct }: { s: S | null; direct: boolean }) {
           <div key={t} className={c ?? ""}><dt>{t}</dt><dd>{v}</dd></div>
         ))}
       </dl>
-      <span className={`direct ${direct ? "actif" : ""}`} title={direct ? "Mises à jour en direct" : "Connexion en direct interrompue"}>
+      {s?.instantane ? (
+        <span className="direct" title="Version en ligne : instantané des vraies données de la plateforme">
+          <i />instantané du {new Date(s.instantane).toLocaleDateString("fr-FR")}
+        </span>
+      ) : <span className={`direct ${direct ? "actif" : ""}`} title={direct ? "Mises à jour en direct" : "Connexion en direct interrompue"}>
         <i />{direct ? "en direct" : "hors ligne"}
-      </span>
+      </span>}
     </>
   );
 }

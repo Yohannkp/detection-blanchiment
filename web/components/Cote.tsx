@@ -1,7 +1,7 @@
 "use client";
 // Colonne de droite : pourquoi ce score, décision de l'analyste, piste d'audit.
 import { useState } from "react";
-import { decider, type Decision, type Dossier } from "@/lib/api";
+import { STATIQUE, decider, type Decision, type Dossier } from "@/lib/api";
 import { DECISIONS, STATUTS, libelleVariable, momentLocal, score, valeurRaison } from "@/lib/format";
 
 const QUOI = { ouverture: "Alerte ouverte", preuve: "Preuve ajoutée", score: "Score", decision: "Décision" } as const;
@@ -27,7 +27,7 @@ export default function Cote({ d, apres }: { d: Dossier; apres: () => void }) {
     setEtat({ envoi: true });
     try {
       await decider(d.alerte.alert_id, choix, texte, analyste);
-      setEtat({ ok: "Décision inscrite dans la piste d'audit." });
+      setEtat({ ok: STATIQUE ? "Décision inscrite, dans ce navigateur seulement (version en ligne : rien n'est envoyé)." : "Décision inscrite dans la piste d'audit." });
       setTexte(""); setChoix(null);
       apres();
     } catch (err) {

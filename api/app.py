@@ -151,7 +151,7 @@ async def alertes(
     statut: Literal["a_traiter", "traitees", "toutes"] = "a_traiter",
     tri: Literal["score", "recentes"] = "score",
     entite: str | None = Query(None, max_length=64, description="compte au centre de l'alerte"),
-    limite: int = Query(60, ge=1, le=500),
+    limite: int = Query(60, ge=1, le=10_000),
 ) -> list[dict]:
     return await requete(f"""
         WITH s AS ({_DERNIER_SCORE}), st AS ({_STATUT}),

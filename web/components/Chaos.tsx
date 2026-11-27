@@ -2,7 +2,7 @@
 // Console Chaos : on provoque une attaque ou une panne, et la plateforme doit réagir comme prévu.
 // Chaque essai dit ce qu'il attend ; la console le vérifie elle-même sur l'API, sans faire confiance au service Chaos.
 import { useEffect, useRef, useState } from "react";
-import { alertesDuCompte, lancerScenario, operationsDuScenario, panneGraphe, type Regle, type ResultatChaos, type Sante } from "@/lib/api";
+import { BASE, STATIQUE, alertesDuCompte, lancerScenario, operationsDuScenario, panneGraphe, type Regle, type ResultatChaos, type Sante } from "@/lib/api";
 import { REGLES, ibanCourt } from "@/lib/format";
 
 const SCENARIOS = [
@@ -25,6 +25,7 @@ type Verif =
   | { type: "global"; libelle: string; cle: "doublons_absorbes" | "dlq"; cible: number; etat: Etat; apres?: number; vu?: number }
   | { type: "retard"; etat: Etat; apres?: number; manque?: number };
 interface Essai {
+  nom?: string; rejeu?: Verif[];         // version en ligne : l'essai réel enregistré, rejoué à son rythme
   id: number; titre: string; resume: string; messages: number; debut: number; base: Sante | null; verifs: Verif[]; erreur?: string;
   prefixe?: string; attendues?: number;  // opérations du scénario attendues au grand livre
   complet?: number;                      // instant où toutes ses opérations sont dans le graphe (donc transmises à la détection)
@@ -76,7 +77,7 @@ export default function Chaos({ sante, fermer, ouvrir }: { sante: Sante | null; 
     try {
       const r = await lancerScenario(nom);
       const [verifs, attendues] = verifsDe(nom, r);
-      ajouter({ titre, resume: r.resume, messages: r.messages ?? 0, base, verifs, prefixe: r.prefixe, attendues });
+      ajouter({ nom, titre, resume: r.resume, messages: r.messages ?? 0, base, verifs, prefixe: r.prefixe, attendues });
     } catch (e) { echec(titre, e); } finally { setOccupe(null); }
   }
 
@@ -87,7 +88,7 @@ export default function Chaos({ sante, fermer, ouvrir }: { sante: Sante | null; 
       await panneGraphe(PANNE_S);
       const r = await lancerScenario("normal");  // du trafic pendant la panne : le grand livre doit l'encaisser
       const n = r.messages ?? 0;
-      ajouter({ titre, resume: `Le graph-sink cesse de lire pendant ${PANNE_S} s ; ${n} opérations arrivent pendant ce temps.`,
+      ajouter({ nom: "panne", titre, resume: `Le graph-sink cesse de lire pendant ${PANNE_S} s ; ${n} opérations arrivent pendant ce temps.`,
         messages: n, base: santeRef.current, prefixe: r.prefixe, attendues: n, verifs: [
           { type: "grand_livre", libelle: `le grand livre écrit les ${n} opérations`, cible: n, etat: "attente" },
           { type: "retard", etat: "attente" },
@@ -96,6 +97,19 @@ export default function Chaos({ sante, fermer, ouvrir }: { sante: Sante | null; 
     } catch (e) { echec(titre, e); } finally { setOccupe(null); }
   }
 
+  // Version en ligne : pas de plateforme derrière la page. Chaque bouton rejoue un essai réel enregistré
+  // (docs/demo/capturer_chaos.js), vérification par vérification, au moment où elle avait été obtenue.
+  const [enregistres, setEnregistres] = useState<{ le: string; essais: Essai[] } | null>(null);
+  useEffect(() => {
+    if (STATIQUE) fetch(`${BASE}/donnees/chaos.json`).then((r) => r.json()).then(setEnregistres).catch(() => {});
+  }, []);
+  function rejouer(nom: string) {
+    const e = enregistres?.essais.find((x) => x.nom === nom);
+    if (e) ajouter({ ...e, rejeu: e.verifs, verifs: e.verifs.map((v) => ({ ...v, etat: "attente" as Etat, apres: undefined })) });
+  }
+  // Pour l'enregistrement de ces essais (capturer_chaos.js lit cet état).
+  useEffect(() => { (window as unknown as { __essaisChaos?: Essai[] }).__essaisChaos = essais; }, [essais]);
+
   // Vérification en direct, toutes les 1,5 s. Une erreur de l'API ne valide jamais rien : la vérification reste en attente.
   const essaisRef = useRef(essais);
   essaisRef.current = essais;
@@ -103,6 +117,12 @@ export default function Chaos({ sante, fermer, ouvrir }: { sante: Sante | null; 
     let enCours = false;
     const t = setInterval(async () => {
       if (enCours || !essaisRef.current.some((e) => e.verifs.some((v) => v.etat === "attente"))) return;
+      if (STATIQUE) {
+        const t = Date.now();
+        setEssais((x) => x.map((e) => !e.rejeu ? e : { ...e,
+          verifs: e.verifs.map((v, i) => v.etat === "attente" && (e.rejeu![i].apres ?? 0) <= t - e.debut ? e.rejeu![i] : v) }));
+        return;
+      }
       enCours = true;
       try {
         const s = santeRef.current;
@@ -161,7 +181,8 @@ export default function Chaos({ sante, fermer, ouvrir }: { sante: Sante | null; 
   return (
     <aside className="chaos" aria-label="Console Chaos">
       <div className="chaos-tete">
-        <div><h2>Console Chaos</h2><p>On provoque une attaque ou une panne ; la console vérifie que la plateforme réagit comme prévu.</p></div>
+        <div><h2>Console Chaos</h2><p>On provoque une attaque ou une panne ; la console vérifie que la plateforme réagit comme prévu.</p>
+          {STATIQUE && <p className="rejeu">Version en ligne : chaque bouton rejoue, à son rythme réel, un essai fait sur la plateforme complète{enregistres ? ` le ${new Date(enregistres.le).toLocaleDateString("fr-FR")}` : ""}.</p>}</div>
         <button className="fermer" onClick={fermer} aria-label="Fermer la console Chaos">×</button>
       </div>
       <dl className="compteurs">
@@ -174,15 +195,19 @@ export default function Chaos({ sante, fermer, ouvrir }: { sante: Sante | null; 
         {SCENARIOS.map((s) => (
           <li key={s.nom}>
             <div><b>{s.titre}</b><small>{s.detail}</small></div>
-            <button className="bouton petit" disabled={occupe != null} onClick={() => jouer(s.nom, s.titre)}>{occupe === s.nom ? "…" : "Jouer"}</button>
+            {STATIQUE
+              ? <button className="bouton petit" disabled={!enregistres?.essais.some((e) => e.nom === s.nom)} onClick={() => rejouer(s.nom)}>Rejouer</button>
+              : <button className="bouton petit" disabled={occupe != null} onClick={() => jouer(s.nom, s.titre)}>{occupe === s.nom ? "…" : "Jouer"}</button>}
           </li>
         ))}
         <li className="panne">
           <div><b>Panne du graph-sink · {PANNE_S} s</b><small>300 opérations arrivent pendant que le graphe est coupé. Le grand livre continue ; la détection, qui lit après le graphe, attend : alertes retardées, jamais perdues.</small></div>
-          <button className="bouton petit" disabled={occupe != null} onClick={panne}>{occupe === "panne" ? "…" : "Couper"}</button>
+          {STATIQUE
+            ? <button className="bouton petit" disabled={!enregistres?.essais.some((e) => e.nom === "panne")} onClick={() => rejouer("panne")}>Rejouer</button>
+            : <button className="bouton petit" disabled={occupe != null} onClick={panne}>{occupe === "panne" ? "…" : "Couper"}</button>}
         </li>
       </ul>
-      <div className="titre"><span>Journal</span><span>{essais.length ? "vérifié sur l'API" : ""}</span></div>
+      <div className="titre"><span>Journal</span><span>{essais.length ? (STATIQUE ? "rejeu d'essais réels" : "vérifié sur l'API") : ""}</span></div>
       {essais.length === 0 && <p className="vide">Aucun essai pour l'instant.</p>}
       {essais.map((e) => {
         const ko = e.erreur || e.verifs.some((v) => v.etat === "ko");

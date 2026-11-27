@@ -1,0 +1,48 @@
+# Version en ligne de Filature, sans serveur : l'interface Next.js exportée en site statique, avec
+# l'instantané des vraies données (web/public/donnees, écrit par scripts/instantane_web.py), sur GitHub Pages.
+name: Version en ligne
+
+on:
+  push:
+    branches: [main]
+    paths: ["web/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  construire:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Site statique
+        working-directory: web
+        env:
+          NEXT_PUBLIC_STATIQUE: "1"
+          NEXT_PUBLIC_BASE_PATH: /detection-blanchiment
+        run: npm ci --no-audit --no-fund && npm run build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/out
+
+  deployer:
+    needs: construire
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - id: pages
+        uses: actions/deploy-pages@v4

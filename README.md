@@ -4,6 +4,8 @@ Plateforme de streaming qui reçoit des opérations bancaires, les inscrit dans 
 double sans jamais compter deux fois le même euro, et détecte en flux les schémas de blanchiment dans le
 graphe des flux, avec des performances mesurées sur des données étiquetées que la détection n'a jamais vues.
 
+**▶ Essayer Filature en ligne : https://yohannkp.github.io/detection-blanchiment/** (instantané des vraies données, voir plus bas)
+
 ![Démonstration de Filature : file d'alertes, dossier d'un cycle, raisons du score, décision de l'analyste, montage injecté en direct, puis la console Chaos (schtroumpfage, piège de la paie, doublons, panne du graphe)](docs/demo/demo.gif)
 
 *Démonstration de 2 min 10 (version nette : [docs/demo/demo.mp4](docs/demo/demo.mp4)), enregistrée par un navigateur piloté
@@ -135,6 +137,19 @@ python ml/entrainer.py data/variables_grand_livre.parquet --nom detection-blanch
 docker compose --profile modele up -d scoreur                                              # scores dans alertes_scores
 mlflow ui --backend-store-uri sqlite:///mlflow.db                                          # suivi des essais
 ```
+
+## Version en ligne
+
+| | Plateforme complète (Docker) | Version en ligne (GitHub Pages) |
+|---|---|---|
+| Données | Flux en direct | Instantané des vraies données : 176 060 opérations AMLworld, 791 alertes, 694 dossiers |
+| Décisions | Inscrites au journal d'audit (ajout seul) | Possibles, gardées dans le navigateur du visiteur seulement |
+| Console Chaos | Joue les scénarios sur la plateforme | Rejoue, à leur rythme réel, six essais faits sur la plateforme complète |
+
+La version en ligne réutilise exactement l'interface de la plateforme : seul le client API change de source
+(`NEXT_PUBLIC_STATIQUE`, `web/lib/api.ts`). L'instantané est écrit par `scripts/instantane_web.py`, plateforme
+lancée ; les comptes inventés par les tests et le banc de charge en sont exclus. Les essais Chaos sont
+enregistrés par `docs/demo/capturer_chaos.js`. Le site est publié par `.github/workflows/pages.yml`.
 
 ## Interface : Filature
 

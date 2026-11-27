@@ -6,7 +6,7 @@ import Cote from "@/components/Cote";
 import Dossier from "@/components/Dossier";
 import FileAlertes, { type FiltreStatut } from "@/components/FileAlertes";
 import Sante from "@/components/Sante";
-import { lireAlertes, lireDossier, lireSante, urlFlux, type AlerteResume, type Dossier as D, type Regle, type Sante as S, type Tri } from "@/lib/api";
+import { STATIQUE, lireAlertes, lireDossier, lireSante, urlFlux, type AlerteResume, type Dossier as D, type Regle, type Sante as S, type Tri } from "@/lib/api";
 
 export default function Poste() {
   const [sante, setSante] = useState<S | null>(null);
@@ -64,6 +64,7 @@ export default function Poste() {
 
   // Direct : santé toutes les 3 s, file et dossier rechargés quand une alerte, un score ou une décision change.
   useEffect(() => {
+    if (STATIQUE) return;  // version en ligne : un instantané, pas de flux
     let ws: WebSocket | null = null, arret = false, minuterie: ReturnType<typeof setTimeout>;
     const connecter = () => {
       ws = new WebSocket(urlFlux());
